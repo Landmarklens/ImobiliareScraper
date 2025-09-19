@@ -2,6 +2,9 @@ FROM public.ecr.aws/docker/library/python:3.11-slim
 
 WORKDIR /app
 
+# Set Python path for module discovery
+ENV PYTHONPATH=/app/imobiliare_spiders:$PYTHONPATH
+
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
@@ -20,4 +23,5 @@ COPY . .
 ENV PYTHONPATH=/app
 
 # Default command - can be overridden by ECS task definition
+WORKDIR /app/imobiliare_spiders
 CMD ["scrapy", "crawl", "imobiliare_ro"]
