@@ -1,0 +1,30 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.11
+    commands:
+      - echo Installing dependencies...
+      - pip install --upgrade pip
+      - pip install -r requirements.txt
+      - pip install pytest pytest-cov pytest-mock
+  pre_build:
+    commands:
+      - echo Setting up test environment...
+      - export PYTHONPATH=$PYTHONPATH:$(pwd)
+      - export DEV_MODE=true
+      - export ENVIRONMENT=test
+  build:
+    commands:
+      - echo Running tests...
+      - pytest tests/ -v --cov=imobiliare_spiders --cov-report=xml --cov-report=term
+      - echo Tests completed
+  post_build:
+    commands:
+      - echo Test results processed
+reports:
+  pytest_reports:
+    files:
+      - coverage.xml
+    file-format: COBERTURAXML
