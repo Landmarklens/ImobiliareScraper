@@ -41,31 +41,31 @@ DEV_MODE = os.getenv("DEV_MODE", "True").lower() == "true"
 
 # Database configuration - using same DB as Swiss scraper
 DB_CONNECTION_STRING = get_parameter(
-    "/homeai/prod/DB_CONNECTION_STRING",
+    "/HomeAiScrapper/DB_CONNECTION_STRING",
     "postgresql://localhost:5432/homeai_db"
 )
 
 # AWS S3 Configuration (even though we don't store images, keeping for consistency)
-S3_ACCESS_KEY = get_parameter("/homeai/prod/S3_ACCESS_KEY", "your_access_key")
-S3_SECRET_KEY = get_parameter("/homeai/prod/S3_SECRET_KEY", "your_secret_key")
-S3_BUCKET_NAME = get_parameter("/homeai/prod/S3_BUCKET_NAME", "homeai-scraped-data")
+S3_ACCESS_KEY = get_parameter("/HomeAiScrapper/S3_ACCESS_KEY", "your_access_key")
+S3_SECRET_KEY = get_parameter("/HomeAiScrapper/S3_SECRET_KEY", "your_secret_key")
+S3_BUCKET_NAME = get_parameter("/HomeAiScrapper/S3_BUCKET_NAME", "homeai-scraped-data")
 
 # Geocoding services
-OPEN_CAGE_API_KEY = get_parameter("/homeai/prod/OPEN_CAGE_API_KEY", "")
+OPEN_CAGE_API_KEY = get_parameter("/HomeAiScrapper/OPEN_CAGE", "")
 GOOGLE_MAPS_API_KEY = get_parameter("/homeai/prod/GOOGLE_MAPS_API_KEY", "")
 
 # Proxy configuration (if needed for Romanian sites)
-WEBSHARE_API_KEY = get_parameter("/homeai/prod/WEBSHARE_API_KEY", "")
+WEBSHARE_API_KEY = get_parameter("/HomeAiScrapper/WEBSHARE_API_KEY", "")
 WEBSHARE_API_URL = get_parameter(
-    "/homeai/prod/WEBSHARE_API_URL",
+    "/HomeAiScrapper/WEBSHARE_API_URL",
     "https://proxy.webshare.io/api/v2/proxy/list/"
 )
 PROXY_ENABLED = get_parameter("/HomeAiScrapper/PROXY_ENABLED", "true").lower() == "true"
-PROXY_REFRESH_HOURS = float(get_parameter("/homeai/prod/PROXY_REFRESH_HOURS", "3.0"))
+PROXY_REFRESH_HOURS = 3.0  # Fixed refresh interval
 
-# Monitoring
-SCRAPEOPS_API_KEY = get_parameter("/homeai/prod/SCRAPEOPS_API_KEY", "your_scrapeops_api_key")
-SLACK_WEBHOOK_URL = get_parameter("/homeai/prod/SLACK_WEBHOOK_URL", "")
+# Monitoring (optional)
+SCRAPEOPS_API_KEY = ""  # Not currently used
+SLACK_WEBHOOK_URL = ""  # Not currently used
 
 # Romania specific settings
 IMOBILIARE_API_KEY = get_parameter("/homeai/prod/imobiliare/API_KEY", "")
