@@ -97,6 +97,9 @@ class RomaniaDatabasePipeline:
 
     def process_item(self, item, spider):
         """Process and save item to database"""
+        spider.logger.info(f"[DB_PIPELINE] Processing item: {item.get('external_id')} - {item.get('title', 'No title')[:50]}")
+        spider.logger.info(f"[DB_PIPELINE] URL: {item.get('external_url')}")
+
         try:
             # Check if property already exists
             existing = self.session.query(SpiderResultRomania).filter_by(
@@ -105,16 +108,17 @@ class RomaniaDatabasePipeline:
 
             if existing:
                 # Update existing property
-                spider.logger.debug(f"Updating existing property: {item['external_id']}")
+                spider.logger.info(f"[DB_PIPELINE] Updating existing property: {item['external_id']}")
                 self._update_property(existing, item)
             else:
                 # Create new property
-                spider.logger.debug(f"Creating new property: {item['external_id']}")
+                spider.logger.info(f"[DB_PIPELINE] Creating NEW property: {item['external_id']}")
                 property_obj = self._create_property(item)
                 self.session.add(property_obj)
 
             self.session.commit()
             self.processed_count += 1
+            spider.logger.info(f"[DB_PIPELINE] Successfully saved item {item['external_id']} (Total: {self.processed_count})")
 
         except Exception as e:
             spider.logger.error(f"Database error processing item {item.get('external_id')}: {e}")

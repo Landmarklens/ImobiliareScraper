@@ -36,6 +36,12 @@ class ImobiliareRoSpider(GeocodingMixin, SmartSitemapSpider):
         self.scraped_count = 0
         self.deal_type = kwargs.get('deal_type', 'rent').lower()
 
+        # Enhanced logging
+        self.logger.info(f"[SPIDER_INIT] Starting {self.name} spider")
+        self.logger.info(f"[SPIDER_INIT] Deal type: {self.deal_type}")
+        self.logger.info(f"[SPIDER_INIT] Limit: {self.limit}")
+        self.logger.info(f"[SPIDER_INIT] External source: {self.external_source}")
+
         # Base URLs for different deal types
         if self.deal_type == 'rent':
             self.start_urls = [
@@ -64,13 +70,18 @@ class ImobiliareRoSpider(GeocodingMixin, SmartSitemapSpider):
             )
         else:
             # Regular crawling mode
-            for url in self.start_urls:
-                yield scrapy.Request(url=url, callback=self.parse_listing)
+            self.logger.info(f"[START_REQUESTS] Starting with {len(self.start_urls)} URLs")
+            for i, url in enumerate(self.start_urls, 1):
+                self.logger.info(f"[START_REQUEST] Processing URL {i}/{len(self.start_urls)}: {url}")
+                yield scrapy.Request(url=url, callback=self.parse_listing, meta={'url_index': i})
 
     def parse_listing(self, response):
         """Parse listing page with multiple properties"""
+        self.logger.info(f"[PARSE_LISTING] Processing listing page: {response.url} (Status: {response.status})")
+        self.logger.info(f"[PARSE_LISTING] Current scraped count: {self.scraped_count}/{self.limit}")
+
         if self.scraped_count >= self.limit:
-            self.logger.info(f"Reached limit of {self.limit} properties")
+            self.logger.info(f"[LIMIT_REACHED] Reached limit of {self.limit} properties")
             return
 
         # Extract property URLs
@@ -104,13 +115,16 @@ class ImobiliareRoSpider(GeocodingMixin, SmartSitemapSpider):
 
     def parse_property(self, response):
         """Parse individual property page"""
+        self.logger.info(f"[PARSE_PROPERTY] Processing property: {response.url}")
+
         # Extract property ID from URL
         url_parts = response.url.split('/')
         external_id = url_parts[-1] if url_parts[-1] else url_parts[-2]
+        self.logger.info(f"[PARSE_PROPERTY] Property ID: {external_id}")
 
         # Check if property exists (404, etc.)
         if response.status != 200:
-            self.logger.warning(f"Property not available: {response.url} (status: {response.status})")
+            self.logger.warning(f"[PARSE_PROPERTY] Property not available: {response.url} (status: {response.status})")
             return
 
         # Initialize item
