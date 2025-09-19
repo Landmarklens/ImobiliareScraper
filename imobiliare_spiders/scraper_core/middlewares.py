@@ -396,6 +396,28 @@ class WebshareProxyMiddleware:
         return None  # Let Scrapy's retry middleware handle the retry
 
 
+class CustomUserAgentMiddleware(object):
+    """Middleware to set custom User-Agent headers"""
+
+    def __init__(self, user_agent=''):
+        self.user_agent = user_agent
+
+    @classmethod
+    def from_crawler(cls, crawler):
+        user_agent = crawler.settings.get('IMOBILIARE_USER_AGENT',
+                                         crawler.settings.get('USER_AGENT', ''))
+        return cls(user_agent=user_agent)
+
+    def process_request(self, request, spider):
+        if self.user_agent:
+            request.headers.setdefault('User-Agent', self.user_agent)
+        else:
+            # Fall back to random user agent if no custom one set
+            ua = random_user_agent()
+            if ua:
+                request.headers.setdefault("User-Agent", ua)
+
+
 class RandomUserAgentMiddleware(object):
     def process_request(self, request, spider):
         ua = random_user_agent()
@@ -516,3 +538,32 @@ class ProxyMiddleware(object):
 
             proxy_user_pass = f"{self.proxy_username}:{self.proxy_password}"
             request.meta["proxy"] = f"http://{proxy_user_pass}@{self.proxy_host}"
+
+
+class RetryMiddleware(ExponentialBackoffRetryMiddleware):
+    """Alias for ExponentialBackoffRetryMiddleware for backward compatibility"""
+    pass
+
+
+class HeadersMiddleware:
+    """Middleware to handle custom headers for requests"""
+
+    def __init__(self, settings):
+        self.custom_headers = settings.getdict('CUSTOM_HEADERS', {})
+
+    @classmethod
+    def from_crawler(cls, crawler):
+        return cls(crawler.settings)
+
+    def process_request(self, request, spider):
+        for header, value in self.custom_headers.items():
+            request.headers.setdefault(header.encode(), value.encode())
+
+
+class StartUrlValidationMiddleware:
+    """Spider middleware to validate start URLs"""
+
+    def process_start_requests(self, start_requests, spider):
+        for request in start_requests:
+            spider.logger.info(f"Processing start URL: {request.url}")
+            yield request

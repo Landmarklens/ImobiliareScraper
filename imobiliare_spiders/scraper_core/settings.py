@@ -60,7 +60,7 @@ WEBSHARE_API_URL = get_parameter(
     "/homeai/prod/WEBSHARE_API_URL",
     "https://proxy.webshare.io/api/v2/proxy/list/"
 )
-PROXY_ENABLED = get_parameter("/homeai/prod/PROXY_ENABLED", "false").lower() == "true"
+PROXY_ENABLED = get_parameter("/HomeAiScrapper/PROXY_ENABLED", "true").lower() == "true"
 PROXY_REFRESH_HOURS = float(get_parameter("/homeai/prod/PROXY_REFRESH_HOURS", "3.0"))
 
 # Monitoring
