@@ -1,6 +1,6 @@
 # Core Scrapy framework
 scrapy==2.11.0
-Twisted==23.10.0
+# Twisted is installed automatically with scrapy
 
 # Database
 psycopg2-binary==2.9.9
