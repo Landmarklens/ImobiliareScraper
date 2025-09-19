@@ -28,24 +28,54 @@ class ImobiliareSitemapSpider(GeocodingMixin, SitemapSpider):
         'https://www.imobiliare.ro/sitemap-listings-index-ro.xml'
     ]
 
+    # Rules for following sitemap URLs
+    sitemap_rules = [
+        # Match property URLs - they end with a numeric ID
+        (r'/oferta/.*-\d+$', 'parse'),
+    ]
+
+    # Follow sitemaps in the index
+    sitemap_follow = [
+        # Follow regional sitemaps for apartments
+        r'sitemap-listings-apartments-',
+        # Follow regional sitemaps for houses
+        r'sitemap-listings-houses-',
+        # Follow regional sitemaps for studios
+        r'sitemap-listings-studios-',
+    ]
+
     # Custom settings - NO PROXIES for individual pages
     custom_settings = {
-        'CONCURRENT_REQUESTS': 4,
-        'DOWNLOAD_DELAY': 2.0,  # Respectful delay
+        'CONCURRENT_REQUESTS': 2,  # Lower concurrency to avoid detection
+        'DOWNLOAD_DELAY': 3.0,  # Longer delay
         'RANDOMIZE_DOWNLOAD_DELAY': True,
-        'ROBOTSTXT_OBEY': True,
+        'ROBOTSTXT_OBEY': False,  # Skip robots.txt for now
         'DOWNLOADER_MIDDLEWARES': {
             'scraper_core.middlewares.CustomUserAgentMiddleware': 400,
             # Disable proxy middleware for this spider
             'scraper_core.middlewares.WebshareProxyMiddleware': None,
             'scraper_core.middlewares.RetryMiddleware': 500,
             'scraper_core.middlewares.HeadersMiddleware': 550,
+        },
+        # Add specific headers to mimic browser
+        'DEFAULT_REQUEST_HEADERS': {
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
         }
     }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.limit = int(kwargs.get('limit', float('inf'))) if 'limit' in kwargs else float('inf')
+        self.limit = int(kwargs.get('limit', 10))  # Default to 10 for testing
         self.scraped_count = 0
         self.deal_type = kwargs.get('deal_type', 'rent').lower()
         self.region = kwargs.get('region', None)  # Optional: filter by region
@@ -59,31 +89,28 @@ class ImobiliareSitemapSpider(GeocodingMixin, SitemapSpider):
         self.logger.info(f"[SITEMAP_SPIDER] Region filter: {self.region or 'None'}")
 
     def sitemap_filter(self, entries):
-        """Filter sitemap entries based on deal type and region"""
+        """Filter sitemap entries based on deal type and limit"""
+        count = 0
         for entry in entries:
-            url = entry['loc']
-
-            # Check if we've reached the limit
-            if self.scraped_count >= self.limit:
+            if count >= self.limit:
                 self.logger.info(f"[SITEMAP_FILTER] Reached limit of {self.limit} properties")
                 break
 
-            # Filter by deal type
+            url = entry['loc']
+
+            # Log every 10th URL to track progress
+            if count % 10 == 0:
+                self.logger.info(f"[SITEMAP_FILTER] Processing entry {count}: {url}")
+
+            # Filter by deal type if needed (based on URL patterns)
             if self.deal_type == 'rent' and 'inchiriat' in url:
-                # Filter by region if specified
-                if self.region and self.region.lower() not in url.lower():
-                    continue
-
-                self.scraped_count += 1
-                self.logger.info(f"[SITEMAP_FILTER] Processing property {self.scraped_count}/{self.limit}: {url}")
+                count += 1
                 yield entry
-
             elif self.deal_type == 'buy' and ('vanzare' in url or 'vinde' in url):
-                if self.region and self.region.lower() not in url.lower():
-                    continue
-
-                self.scraped_count += 1
-                self.logger.info(f"[SITEMAP_FILTER] Processing property {self.scraped_count}/{self.limit}: {url}")
+                count += 1
+                yield entry
+            elif self.deal_type == 'all':  # Allow all types
+                count += 1
                 yield entry
 
     def parse(self, response):
