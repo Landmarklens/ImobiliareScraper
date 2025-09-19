@@ -98,19 +98,27 @@ class ImobiliareSitemapSpider(GeocodingMixin, SitemapSpider):
 
             url = entry['loc']
 
-            # Log every 10th URL to track progress
-            if count % 10 == 0:
-                self.logger.info(f"[SITEMAP_FILTER] Processing entry {count}: {url}")
+            # Log progress
+            if count < 5 or count % 100 == 0:
+                self.logger.info(f"[SITEMAP_FILTER] Entry {count}: {url}")
 
-            # Filter by deal type if needed (based on URL patterns)
-            if self.deal_type == 'rent' and 'inchiriat' in url:
-                count += 1
-                yield entry
-            elif self.deal_type == 'buy' and ('vanzare' in url or 'vinde' in url):
-                count += 1
-                yield entry
-            elif self.deal_type == 'all':  # Allow all types
-                count += 1
+            # For property URLs (not sitemap XMLs), apply deal type filter
+            if '/oferta/' in url:
+                # This is an actual property URL
+                if self.deal_type == 'rent' and 'inchiriat' in url:
+                    count += 1
+                    self.logger.info(f"[SITEMAP_FILTER] Accepting rental property {count}/{self.limit}: {url}")
+                    yield entry
+                elif self.deal_type == 'buy' and ('vanzare' in url or 'vinde' in url):
+                    count += 1
+                    self.logger.info(f"[SITEMAP_FILTER] Accepting sale property {count}/{self.limit}: {url}")
+                    yield entry
+                elif self.deal_type == 'all':
+                    count += 1
+                    self.logger.info(f"[SITEMAP_FILTER] Accepting property {count}/{self.limit}: {url}")
+                    yield entry
+            else:
+                # For sitemap XML URLs, always yield them (they contain properties)
                 yield entry
 
     def parse(self, response):
