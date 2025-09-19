@@ -18,7 +18,7 @@ botocore==1.33.5
 
 # HTTP & Networking
 requests==2.31.0
-urllib3==2.1.0
+# urllib3 is installed with requests
 pyOpenSSL==23.3.0
 
 # Utilities
