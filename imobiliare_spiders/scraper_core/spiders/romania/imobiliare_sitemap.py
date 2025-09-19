@@ -134,9 +134,15 @@ class ImobiliareSitemapSpider(GeocodingMixin, SitemapSpider):
         url_parts = response.url.split('/')
         property_id = url_parts[-1] if url_parts[-1] else url_parts[-2]
 
-        # Check for DataDome challenge
-        if 'datadome' in response.text.lower() and response.status == 403:
-            self.logger.error(f"[DATADOME] Blocked by DataDome on property page: {response.url}")
+        # Check for DataDome challenge or minimal content
+        if 'datadome' in response.text.lower() or 'cloudflare' in response.text.lower():
+            self.logger.error(f"[BLOCKED] Blocked by anti-bot on property page: {response.url}")
+            return
+
+        # Debug: Check what we're getting
+        if len(response.text) < 1000:
+            self.logger.warning(f"[MINIMAL_CONTENT] Page has very little content ({len(response.text)} bytes): {response.url}")
+            self.logger.debug(f"[CONTENT_SAMPLE] First 500 chars: {response.text[:500]}")
             return
 
         # Initialize item
@@ -147,30 +153,62 @@ class ImobiliareSitemapSpider(GeocodingMixin, SitemapSpider):
         item['external_url'] = response.url
         item['external_id'] = property_id
 
-        # Title
-        item['title'] = response.css('h1.titlu::text').get() or response.css('h1::text').get()
+        # Try multiple selectors for title
+        item['title'] = (response.css('h1::text').get() or
+                         response.css('[class*="title"]::text').get() or
+                         response.css('meta[property="og:title"]::attr(content)').get() or
+                         response.css('title::text').get() or
+                         "Property " + property_id)
 
-        # Description
-        description_parts = response.css('div.descriere div.row div::text').getall()
-        item['description'] = ' '.join(description_parts).strip() if description_parts else None
+        # Try to extract from JSON-LD structured data
+        json_ld = response.css('script[type="application/ld+json"]::text').get()
+        if json_ld:
+            try:
+                import json
+                data = json.loads(json_ld)
+                if isinstance(data, dict):
+                    item['title'] = item['title'] or data.get('name')
+                    item['description'] = data.get('description')
+                    if 'offers' in data:
+                        price_info = data['offers']
+                        if 'price' in price_info:
+                            item['price'] = float(price_info['price'])
+                            item['currency'] = price_info.get('priceCurrency', 'RON')
+            except:
+                pass
 
-        # Price
-        price_text = response.css('span.pret-mare::text').get()
-        if price_text:
-            # Clean price text and extract number
-            price_match = re.search(r'([\d,\.]+)', price_text.replace(' ', ''))
-            if price_match:
-                price = float(price_match.group(1).replace(',', '').replace('.', ''))
+        # Description from meta or content
+        if not item.get('description'):
+            item['description'] = (response.css('meta[property="og:description"]::attr(content)').get() or
+                                   response.css('meta[name="description"]::attr(content)').get() or
+                                   response.css('[class*="description"]::text').get())
 
-                # Determine currency
-                if '€' in price_text or 'EUR' in price_text:
-                    item['price_eur'] = price
-                    item['currency'] = 'EUR'
-                elif 'lei' in price_text.lower() or 'ron' in price_text:
-                    item['price_ron'] = price
-                    item['currency'] = 'RON'
-                else:
-                    item['price'] = price
+        # Price - try multiple selectors
+        if not item.get('price') and not item.get('price_ron') and not item.get('price_eur'):
+            price_text = (response.css('[class*="price"]::text').get() or
+                         response.css('[class*="pret"]::text').get() or
+                         response.css('meta[property="og:price:amount"]::attr(content)').get())
+
+            if price_text:
+                # Clean price text and extract number
+                price_match = re.search(r'([\d,\.]+)', price_text.replace(' ', ''))
+                if price_match:
+                    price = float(price_match.group(1).replace(',', '').replace('.', ''))
+
+                    # Determine currency
+                    currency_meta = response.css('meta[property="og:price:currency"]::attr(content)').get()
+                    if currency_meta:
+                        item['currency'] = currency_meta
+                        if currency_meta == 'EUR':
+                            item['price_eur'] = price
+                        else:
+                            item['price_ron'] = price
+                    elif '€' in price_text or 'EUR' in price_text:
+                        item['price_eur'] = price
+                        item['currency'] = 'EUR'
+                    else:
+                        item['price_ron'] = price
+                        item['currency'] = 'RON'
 
         # Property type
         property_type_text = response.css('ul.lista-tabelara li:contains("Tip") span::text').get()
@@ -212,30 +250,30 @@ class ImobiliareSitemapSpider(GeocodingMixin, SitemapSpider):
         # Location information
         item['country'] = 'Romania'
 
-        # County/Județ
-        county_text = response.css('ul.breadcrumb li a[href*="judet"]::text').get()
-        if county_text:
-            item['county'] = county_text.replace('Județul', '').strip()
+        # Try to extract city from URL patterns
+        if not item.get('city'):
+            # URLs often contain city name: /oferta/apartament-de-inchiriat-CITY-...
+            url_parts = response.url.split('/')[-1].split('-')
+            # Common patterns: apartament-de-inchiriat-CITY or garsoniera-de-inchiriat-CITY
+            if 'inchiriat' in response.url or 'vanzare' in response.url:
+                for i, part in enumerate(url_parts):
+                    if part in ['inchiriat', 'vanzare', 'vinde']:
+                        # City is usually the next part
+                        if i + 1 < len(url_parts):
+                            city_candidate = url_parts[i + 1]
+                            # Filter out common non-city words
+                            if city_candidate not in ['mobilat', 'mobilata', 'nemobilat', 'nemobilata', 'central', 'ultracentral']:
+                                item['city'] = city_candidate.capitalize()
+                                break
 
-        # City
-        city_text = response.css('ul.breadcrumb li a[href*="oras"]::text').get()
-        if city_text:
-            item['city'] = city_text
-        else:
-            # Try to get from address
-            address_parts = response.css('div.localizare span::text').getall()
-            if address_parts:
-                item['city'] = address_parts[0] if address_parts else None
+        # Try meta tags for location
+        if not item.get('city'):
+            location_meta = response.css('meta[property="og:locality"]::attr(content)').get()
+            if location_meta:
+                item['city'] = location_meta
 
-        # Neighborhood
-        neighborhood_text = response.css('ul.breadcrumb li:last-child a::text').get()
-        if neighborhood_text and neighborhood_text != item.get('city'):
-            item['neighborhood'] = neighborhood_text
-
-        # Full address
-        address_parts = response.css('div.localizare::text').getall()
-        if address_parts:
-            item['address'] = ', '.join(address_parts).strip()
+        # Address from meta
+        item['address'] = response.css('meta[property="og:street-address"]::attr(content)').get()
 
         # Features
         features = response.css('ul.lista-tabelara li')

@@ -97,7 +97,9 @@ class RomaniaDatabasePipeline:
 
     def process_item(self, item, spider):
         """Process and save item to database"""
-        spider.logger.info(f"[DB_PIPELINE] Processing item: {item.get('external_id')} - {item.get('title', 'No title')[:50]}")
+        title = item.get('title', 'No title')
+        title_preview = title[:50] if title and isinstance(title, str) else str(title)[:50] if title else 'No title'
+        spider.logger.info(f"[DB_PIPELINE] Processing item: {item.get('external_id')} - {title_preview}")
         spider.logger.info(f"[DB_PIPELINE] URL: {item.get('external_url')}")
 
         try:
