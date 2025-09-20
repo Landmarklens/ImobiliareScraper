@@ -26,3 +26,10 @@ geopy==2.4.1
 # Testing (optional for production)
 pytest==7.4.3
 pytest-cov==4.1.0
+
+# Anti-bot bypass tools
+playwright==1.40.0
+playwright-stealth==1.0.6
+undetected-chromedriver==3.5.4
+cloudscraper==1.2.71
+curl-cffi==0.5.10

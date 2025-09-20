@@ -44,17 +44,17 @@ class ImobiliareSitemapSpider(GeocodingMixin, SitemapSpider):
         r'sitemap-listings-studios-',
     ]
 
-    # Custom settings - NO PROXIES for individual pages
+    # Custom settings - WITH PROXIES to bypass DataDome
     custom_settings = {
-        'CONCURRENT_REQUESTS': 2,  # Lower concurrency to avoid detection
-        'DOWNLOAD_DELAY': 3.0,  # Longer delay
+        'CONCURRENT_REQUESTS': 4,  # Can increase with proxies
+        'DOWNLOAD_DELAY': 2.0,  # Shorter delay with proxies
         'RANDOMIZE_DOWNLOAD_DELAY': True,
         'ROBOTSTXT_OBEY': False,  # Skip robots.txt for now
+        'PROXY_ENABLED': True,  # Enable proxy middleware
         'DOWNLOADER_MIDDLEWARES': {
             'scraper_core.middlewares.CustomUserAgentMiddleware': 400,
-            # Disable proxy middleware for this spider
-            'scraper_core.middlewares.WebshareProxyMiddleware': None,
-            'scraper_core.middlewares.RetryMiddleware': 500,
+            'scraper_core.middlewares.WebshareProxyMiddleware': 410,  # Enable residential proxies
+            'scraper_core.middlewares.ExponentialBackoffRetryMiddleware': 500,
             'scraper_core.middlewares.HeadersMiddleware': 550,
         },
         # Add specific headers to mimic browser
