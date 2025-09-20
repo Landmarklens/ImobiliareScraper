@@ -51,6 +51,7 @@ class ImobiliareSitemapSpider(GeocodingMixin, SitemapSpider):
         'RANDOMIZE_DOWNLOAD_DELAY': True,
         'ROBOTSTXT_OBEY': False,  # Skip robots.txt for now
         'PROXY_ENABLED': True,  # Enable proxy middleware
+        'LOG_LEVEL': 'DEBUG',  # Temporary for debugging
         'DOWNLOADER_MIDDLEWARES': {
             'scraper_core.middlewares.CustomUserAgentMiddleware': 400,
             'scraper_core.middlewares.WebshareProxyMiddleware': 410,  # Enable residential proxies
@@ -145,6 +146,12 @@ class ImobiliareSitemapSpider(GeocodingMixin, SitemapSpider):
             self.logger.debug(f"[CONTENT_SAMPLE] First 500 chars: {response.text[:500]}")
             return
 
+        # Debug: Log available selectors to understand page structure
+        self.logger.debug(f"[DEBUG] H1 found: {response.css('h1::text').get()}")
+        self.logger.debug(f"[DEBUG] Title tag: {response.css('title::text').get()}")
+        self.logger.debug(f"[DEBUG] JSON-LD scripts: {len(response.css('script[type=\"application/ld+json\"]').getall())}")
+        self.logger.debug(f"[DEBUG] Meta og:title: {response.css('meta[property=\"og:title\"]::attr(content)').get()}")
+
         # Initialize item
         item = {}
 
@@ -153,10 +160,16 @@ class ImobiliareSitemapSpider(GeocodingMixin, SitemapSpider):
         item['external_url'] = response.url
         item['external_id'] = property_id
 
-        # Try multiple selectors for title
+        # Try multiple selectors for title - expanded for proxy pages
         item['title'] = (response.css('h1::text').get() or
+                         response.css('h1 *::text').get() or  # Sometimes text is in nested elements
                          response.css('[class*="title"]::text').get() or
+                         response.css('[class*="Title"]::text').get() or
+                         response.css('[data-testid*="title"]::text').get() or
+                         response.css('.listing-title::text').get() or
+                         response.css('.property-title::text').get() or
                          response.css('meta[property="og:title"]::attr(content)').get() or
+                         response.css('meta[name="twitter:title"]::attr(content)').get() or
                          response.css('title::text').get() or
                          "Property " + property_id)
 
@@ -183,11 +196,30 @@ class ImobiliareSitemapSpider(GeocodingMixin, SitemapSpider):
                                    response.css('meta[name="description"]::attr(content)').get() or
                                    response.css('[class*="description"]::text').get())
 
-        # Price - try multiple selectors
+        # Price - try multiple selectors - expanded for proxy pages
         if not item.get('price') and not item.get('price_ron') and not item.get('price_eur'):
-            price_text = (response.css('[class*="price"]::text').get() or
-                         response.css('[class*="pret"]::text').get() or
-                         response.css('meta[property="og:price:amount"]::attr(content)').get())
+            # Try various price selectors
+            price_selectors = [
+                '[class*="price"]::text',
+                '[class*="Price"]::text',
+                '[class*="pret"]::text',
+                '[class*="Pret"]::text',
+                '[data-testid*="price"]::text',
+                '.listing-price::text',
+                '.property-price::text',
+                '[class*="cost"]::text',
+                'span[class*="price"] *::text',  # Nested price
+                'div[class*="price"] *::text',   # Nested price
+                'meta[property="og:price:amount"]::attr(content)',
+                'meta[property="product:price:amount"]::attr(content)'
+            ]
+
+            price_text = None
+            for selector in price_selectors:
+                price_text = response.css(selector).get()
+                if price_text:
+                    self.logger.debug(f"[DEBUG] Price found with selector {selector}: {price_text}")
+                    break
 
             if price_text:
                 # Clean price text and extract number
@@ -210,8 +242,27 @@ class ImobiliareSitemapSpider(GeocodingMixin, SitemapSpider):
                         item['price_ron'] = price
                         item['currency'] = 'RON'
 
-        # Property type
+        # Property type - multiple approaches
+        property_type_text = None
+
+        # Try table-based selectors
         property_type_text = response.css('ul.lista-tabelara li:contains("Tip") span::text').get()
+
+        # Try other common patterns
+        if not property_type_text:
+            property_type_text = (response.css('[class*="property-type"]::text').get() or
+                                 response.css('[class*="tip-proprietate"]::text').get() or
+                                 response.css('[data-testid*="property-type"]::text').get())
+
+        # Extract from URL if not found
+        if not property_type_text:
+            if 'apartament' in response.url:
+                property_type_text = 'apartament'
+            elif 'garsoniera' in response.url:
+                property_type_text = 'garsoniera'
+            elif 'casa' in response.url or 'vila' in response.url:
+                property_type_text = 'casa'
+
         if property_type_text:
             item['property_type'] = standardize_property_type(property_type_text)
 
@@ -221,17 +272,60 @@ class ImobiliareSitemapSpider(GeocodingMixin, SitemapSpider):
         elif 'vanzare' in response.url or 'vinde' in response.url:
             item['deal_type'] = DealTypeEnum.BUY.value
 
-        # Area/Size
+        # Area/Size - multiple approaches
         area_text = response.css('ul.lista-tabelara li:contains("Suprafață") span::text').get()
+
+        # Try other selectors if not found
+        if not area_text:
+            area_selectors = [
+                '[class*="suprafata"]::text',
+                '[class*="surface"]::text',
+                '[class*="area"]::text',
+                '[class*="mp"]::text',
+                '[class*="sqm"]::text',
+                '[data-testid*="area"]::text',
+                'span:contains("mp")::text',
+                'span:contains("m²")::text'
+            ]
+            for selector in area_selectors:
+                try:
+                    area_text = response.css(selector).get()
+                    if area_text:
+                        break
+                except:
+                    pass
+
         if area_text:
             area_match = re.search(r'(\d+)', area_text)
             if area_match:
                 item['square_meters'] = int(area_match.group(1))
+                self.logger.debug(f"[DEBUG] Area found: {item['square_meters']} sqm")
 
-        # Rooms
+        # Rooms - multiple approaches
         rooms_text = response.css('ul.lista-tabelara li:contains("Număr camere") span::text').get()
+
+        if not rooms_text:
+            rooms_text = response.css('ul.lista-tabelara li:contains("camere") span::text').get()
+
+        if not rooms_text:
+            # Try other selectors
+            rooms_selectors = [
+                '[class*="camere"]::text',
+                '[class*="rooms"]::text',
+                '[data-testid*="rooms"]::text',
+                'span:contains("camere")::text'
+            ]
+            for selector in rooms_selectors:
+                try:
+                    rooms_text = response.css(selector).get()
+                    if rooms_text:
+                        break
+                except:
+                    pass
+
         if rooms_text:
             item['room_count'] = safe_int(rooms_text)
+            self.logger.debug(f"[DEBUG] Rooms found: {item['room_count']}")
 
         # Floor
         floor_text = response.css('ul.lista-tabelara li:contains("Etaj") span::text').get()
