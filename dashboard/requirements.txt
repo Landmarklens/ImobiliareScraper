@@ -1,0 +1,7 @@
+Flask==3.0.0
+Flask-BasicAuth==0.2.0
+psycopg2-binary==2.9.9
+paramiko==3.4.0
+sshtunnel==0.4.0
+boto3==1.34.0
+gunicorn==21.2.0
