@@ -1,0 +1,23 @@
+{
+  "Name": "DailyImobiliareScraperSchedule",
+  "Description": "Daily full website scraping for imobiliare.ro at 3 AM UTC",
+  "ScheduleExpression": "cron(0 3 * * ? *)",
+  "State": "ENABLED",
+  "Targets": [
+    {
+      "Arn": "arn:aws:ecs:us-east-1:445567083171:cluster/home-ai-scrapy",
+      "RoleArn": "arn:aws:iam::445567083171:role/ecsTaskExecutionRole",
+      "EcsParameters": {
+        "TaskDefinitionArn": "arn:aws:ecs:us-east-1:445567083171:task-definition/imobiliare-scraper-task",
+        "LaunchType": "FARGATE",
+        "NetworkConfiguration": {
+          "awsvpcConfiguration": {
+            "AssignPublicIp": "ENABLED",
+            "Subnets": ["subnet-08e9e2ae88e3de67f", "subnet-0dd03f6ba893f2b87"]
+          }
+        },
+        "TaskCount": 1
+      }
+    }
+  ]
+}

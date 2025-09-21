@@ -1,0 +1,54 @@
+{
+  "family": "imobiliare-dashboard",
+  "executionRoleArn": "arn:aws:iam::445567083171:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::445567083171:role/ecsTaskRole",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "containerDefinitions": [
+    {
+      "name": "imobiliare-dashboard",
+      "image": "445567083171.dkr.ecr.us-east-1.amazonaws.com/imobiliare-dashboard:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 5000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "FLASK_ENV",
+          "value": "production"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "DASHBOARD_USERNAME",
+          "valueFrom": "arn:aws:ssm:us-east-1:445567083171:parameter/HomeAiScrapper/DASHBOARD_USERNAME"
+        },
+        {
+          "name": "DASHBOARD_PASSWORD",
+          "valueFrom": "arn:aws:ssm:us-east-1:445567083171:parameter/HomeAiScrapper/DASHBOARD_PASSWORD"
+        },
+        {
+          "name": "SECRET_KEY",
+          "valueFrom": "arn:aws:ssm:us-east-1:445567083171:parameter/HomeAiScrapper/DASHBOARD_SECRET_KEY"
+        },
+        {
+          "name": "SSH_PRIVATE_KEY",
+          "valueFrom": "arn:aws:ssm:us-east-1:445567083171:parameter/HomeAiScrapper/SSH_PRIVATE_KEY"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/imobiliare-dashboard",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

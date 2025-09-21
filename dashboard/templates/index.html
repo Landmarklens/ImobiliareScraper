@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Imobiliare.ro Scraper Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+        }
+
+        h1 {
+            color: #333;
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #666;
+            font-size: 1.1em;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+        }
+
+        .stat-value {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            color: #666;
+            font-size: 0.9em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .section {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+        }
+
+        h2 {
+            color: #333;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+
+        .tab {
+            padding: 12px 24px;
+            background: #f0f0f0;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: all 0.3s;
+        }
+
+        .tab:hover {
+            background: #e0e0e0;
+        }
+
+        .tab.active {
+            background: #667eea;
+            color: white;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        th {
+            background: #f8f9fa;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            color: #666;
+            border-bottom: 2px solid #e0e0e0;
+        }
+
+        td {
+            padding: 12px;
+            border-bottom: 1px solid #f0f0f0;
+        }
+
+        tr:hover {
+            background: #f8f9fa;
+        }
+
+        .price-decrease {
+            color: #27ae60;
+            font-weight: bold;
+        }
+
+        .price-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            background: #27ae60;
+            color: white;
+            border-radius: 4px;
+            font-size: 0.85em;
+        }
+
+        .run-status {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 0.85em;
+            font-weight: 600;
+        }
+
+        .status-running {
+            background: #3498db;
+            color: white;
+        }
+
+        .status-stopped {
+            background: #95a5a6;
+            color: white;
+        }
+
+        .status-failed {
+            background: #e74c3c;
+            color: white;
+        }
+
+        .link-button {
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 500;
+            transition: color 0.3s;
+        }
+
+        .link-button:hover {
+            color: #764ba2;
+            text-decoration: underline;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+
+        .error {
+            background: #fee;
+            color: #c00;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .chart-container {
+            margin: 30px 0;
+            height: 300px;
+        }
+
+        @media (max-width: 768px) {
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+
+            h1 {
+                font-size: 1.8em;
+            }
+
+            .stat-value {
+                font-size: 2em;
+            }
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🏠 Imobiliare.ro Scraper Dashboard</h1>
+            <p class="subtitle">Real-time monitoring and analytics for Romanian real estate data</p>
+        </header>
+
+        <div class="stats-grid" id="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value" id="total-properties">-</div>
+                <div class="stat-label">Total Properties</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="today-properties">-</div>
+                <div class="stat-label">Today's Scrapes</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="price-drops">-</div>
+                <div class="stat-label">Price Decreases</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="last-run">-</div>
+                <div class="stat-label">Last Run</div>
+            </div>
+        </div>
+
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('price-report')">📉 Price Decrease Report</button>
+            <button class="tab" onclick="switchTab('recent-runs')">🔄 Recent Runs</button>
+            <button class="tab" onclick="switchTab('recent-properties')">🏘️ Recent Properties</button>
+            <button class="tab" onclick="switchTab('analytics')">📊 Analytics</button>
+        </div>
+
+        <div class="section">
+            <div id="price-report" class="tab-content active">
+                <h2>Top 100 Properties with Highest Price Decrease (Last 2 Months)</h2>
+                <div id="price-report-content" class="loading">Loading price data...</div>
+            </div>
+
+            <div id="recent-runs" class="tab-content">
+                <h2>Recent Scraper Runs</h2>
+                <div id="runs-content" class="loading">Loading run history...</div>
+            </div>
+
+            <div id="recent-properties" class="tab-content">
+                <h2>Recently Scraped Properties</h2>
+                <div id="properties-content" class="loading">Loading properties...</div>
+            </div>
+
+            <div id="analytics" class="tab-content">
+                <h2>Scraping Analytics</h2>
+                <div class="chart-container">
+                    <canvas id="dailyChart"></canvas>
+                </div>
+                <div class="chart-container">
+                    <canvas id="cityChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Tab switching
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+
+            event.target.classList.add('active');
+            document.getElementById(tabName).classList.add('active');
+
+            // Load data for the selected tab
+            if (tabName === 'price-report') loadPriceReport();
+            else if (tabName === 'recent-runs') loadRecentRuns();
+            else if (tabName === 'recent-properties') loadRecentProperties();
+            else if (tabName === 'analytics') loadAnalytics();
+        }
+
+        // Load statistics
+        async function loadStats() {
+            try {
+                const response = await fetch('/api/scraped-properties');
+                const data = await response.json();
+
+                document.getElementById('total-properties').textContent = data.total.toLocaleString();
+
+                const today = data.daily_counts.find(d => {
+                    const date = new Date(d.date);
+                    const now = new Date();
+                    return date.toDateString() === now.toDateString();
+                });
+                document.getElementById('today-properties').textContent = today ? today.count.toLocaleString() : '0';
+            } catch (error) {
+                console.error('Error loading stats:', error);
+            }
+        }
+
+        // Load price decrease report
+        async function loadPriceReport() {
+            try {
+                const response = await fetch('/api/price-decreases');
+                const properties = await response.json();
+
+                if (properties.error) {
+                    document.getElementById('price-report-content').innerHTML =
+                        `<div class="error">Error loading data: ${properties.error}</div>`;
+                    return;
+                }
+
+                document.getElementById('price-drops').textContent = properties.length;
+
+                let html = `
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Property</th>
+                                <th>Location</th>
+                                <th>Type</th>
+                                <th>Size</th>
+                                <th>Original Price</th>
+                                <th>Current Price</th>
+                                <th>Decrease</th>
+                                <th>%</th>
+                                <th>Link</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                `;
+
+                properties.forEach(prop => {
+                    const originalPrice = prop.original_price ? prop.original_price.toLocaleString() : '-';
+                    const currentPrice = prop.current_price ? prop.current_price.toLocaleString() : '-';
+                    const decrease = prop.price_decrease ? prop.price_decrease.toLocaleString() : '-';
+
+                    html += `
+                        <tr>
+                            <td>${prop.title || '-'}</td>
+                            <td>${prop.city || '-'}</td>
+                            <td>${prop.property_type || '-'}</td>
+                            <td>${prop.square_meters ? prop.square_meters + ' m²' : '-'}</td>
+                            <td>${originalPrice} ${prop.currency || 'RON'}</td>
+                            <td>${currentPrice} ${prop.currency || 'RON'}</td>
+                            <td class="price-decrease">-${decrease}</td>
+                            <td><span class="price-badge">-${prop.decrease_percentage || 0}%</span></td>
+                            <td><a href="${prop.external_url}" target="_blank" class="link-button">View</a></td>
+                        </tr>
+                    `;
+                });
+
+                html += '</tbody></table>';
+                document.getElementById('price-report-content').innerHTML = html;
+            } catch (error) {
+                document.getElementById('price-report-content').innerHTML =
+                    `<div class="error">Error loading price report: ${error.message}</div>`;
+            }
+        }
+
+        // Load recent runs
+        async function loadRecentRuns() {
+            try {
+                const response = await fetch('/api/scraper-runs');
+                const runs = await response.json();
+
+                if (runs.error) {
+                    document.getElementById('runs-content').innerHTML =
+                        `<div class="error">Error loading runs: ${runs.error}</div>`;
+                    return;
+                }
+
+                if (runs.length > 0) {
+                    const lastRun = new Date(runs[0].started_at || runs[0].stopped_at);
+                    const hours = Math.floor((new Date() - lastRun) / (1000 * 60 * 60));
+                    document.getElementById('last-run').textContent = hours + 'h ago';
+                }
+
+                let html = `
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Task ID</th>
+                                <th>Status</th>
+                                <th>Started</th>
+                                <th>Stopped</th>
+                                <th>Reason</th>
+                                <th>Logs</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                `;
+
+                runs.forEach(run => {
+                    const statusClass = run.status.toLowerCase() === 'running' ? 'status-running' :
+                                      run.status.toLowerCase() === 'stopped' ? 'status-stopped' : 'status-failed';
+
+                    html += `
+                        <tr>
+                            <td>${run.task_id.substring(0, 8)}...</td>
+                            <td><span class="run-status ${statusClass}">${run.status}</span></td>
+                            <td>${run.started_at ? new Date(run.started_at).toLocaleString() : '-'}</td>
+                            <td>${run.stopped_at ? new Date(run.stopped_at).toLocaleString() : '-'}</td>
+                            <td>${run.stopped_reason || '-'}</td>
+                            <td><a href="#" onclick="viewLogs('${run.task_id}')" class="link-button">View Logs</a></td>
+                        </tr>
+                    `;
+                });
+
+                html += '</tbody></table>';
+                document.getElementById('runs-content').innerHTML = html;
+            } catch (error) {
+                document.getElementById('runs-content').innerHTML =
+                    `<div class="error">Error loading runs: ${error.message}</div>`;
+            }
+        }
+
+        // Load recent properties
+        async function loadRecentProperties() {
+            try {
+                const response = await fetch('/api/recent-properties');
+                const properties = await response.json();
+
+                let html = `
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Title</th>
+                                <th>City</th>
+                                <th>Type</th>
+                                <th>Size</th>
+                                <th>Rooms</th>
+                                <th>Price</th>
+                                <th>Scraped</th>
+                                <th>Link</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                `;
+
+                properties.forEach(prop => {
+                    html += `
+                        <tr>
+                            <td>${prop.title || '-'}</td>
+                            <td>${prop.city || '-'}</td>
+                            <td>${prop.property_type || '-'}</td>
+                            <td>${prop.square_meters ? prop.square_meters + ' m²' : '-'}</td>
+                            <td>${prop.room_count || '-'}</td>
+                            <td>${prop.price ? prop.price.toLocaleString() : '-'} ${prop.currency || 'RON'}</td>
+                            <td>${new Date(prop.created_at).toLocaleString()}</td>
+                            <td><a href="${prop.external_url}" target="_blank" class="link-button">View</a></td>
+                        </tr>
+                    `;
+                });
+
+                html += '</tbody></table>';
+                document.getElementById('properties-content').innerHTML = html;
+            } catch (error) {
+                document.getElementById('properties-content').innerHTML =
+                    `<div class="error">Error loading properties: ${error.message}</div>`;
+            }
+        }
+
+        // Load analytics
+        async function loadAnalytics() {
+            try {
+                const response = await fetch('/api/scraped-properties');
+                const data = await response.json();
+
+                // Daily chart
+                const dailyCtx = document.getElementById('dailyChart').getContext('2d');
+                new Chart(dailyCtx, {
+                    type: 'line',
+                    data: {
+                        labels: data.daily_counts.map(d => new Date(d.date).toLocaleDateString()),
+                        datasets: [{
+                            label: 'Properties Scraped',
+                            data: data.daily_counts.map(d => d.count),
+                            borderColor: '#667eea',
+                            backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                            tension: 0.4
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            title: {
+                                display: true,
+                                text: 'Daily Scraping Activity'
+                            }
+                        }
+                    }
+                });
+
+                // City chart
+                const cityCtx = document.getElementById('cityChart').getContext('2d');
+                new Chart(cityCtx, {
+                    type: 'bar',
+                    data: {
+                        labels: data.city_counts.map(c => c.city || 'Unknown'),
+                        datasets: [{
+                            label: 'Properties',
+                            data: data.city_counts.map(c => c.count),
+                            backgroundColor: '#764ba2'
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            title: {
+                                display: true,
+                                text: 'Properties by City'
+                            }
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error('Error loading analytics:', error);
+            }
+        }
+
+        // View logs modal
+        function viewLogs(taskId) {
+            alert(`Logs for task ${taskId} would be displayed here in a modal`);
+            // In production, implement a modal to display logs
+        }
+
+        // Initialize
+        loadStats();
+        loadPriceReport();
+
+        // Refresh stats every 60 seconds
+        setInterval(loadStats, 60000);
+    </script>
+</body>
+</html>
