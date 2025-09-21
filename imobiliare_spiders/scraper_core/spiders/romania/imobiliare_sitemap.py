@@ -438,7 +438,17 @@ class ImobiliareSitemapSpider(SitemapSpider):
             item['status'] = PropertyStatusEnum.AD_ACTIVE.value
 
         # Generate fingerprint for deduplication
-        item['fingerprint'] = f"{self.external_source}_{property_id}"
+        # Extract numeric ID from the property_id to ensure it fits in database field
+        import re
+        numeric_id_match = re.search(r'\d+$', property_id)
+        if numeric_id_match:
+            numeric_id = numeric_id_match.group()
+        else:
+            # Fallback to using last 10 chars if no numeric ID found
+            numeric_id = property_id[-10:] if len(property_id) > 10 else property_id
+
+        # Ensure fingerprint fits in varchar(64)
+        item['fingerprint'] = f"{self.external_source}_{numeric_id}"[:64]
 
         self.logger.info(f"[PARSE_PROPERTY] Scraped: {item.get('title', 'No title')} - {item.get('price_ron', item.get('price_eur', 'No price'))} - {item.get('city', 'No city')}")
 
