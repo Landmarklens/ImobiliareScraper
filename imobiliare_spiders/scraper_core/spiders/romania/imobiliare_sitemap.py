@@ -14,10 +14,9 @@ from ...helper import safe_int, safe_float
 from ...models import DealTypeEnum, PropertyStatusEnum
 from ...property_type_mapping_ro import standardize_property_type
 from ...utils.property_status_detector import PropertyStatusDetector
-from ..geocoding_mixin import GeocodingMixin
 
 
-class ImobiliareSitemapSpider(GeocodingMixin, SitemapSpider):
+class ImobiliareSitemapSpider(SitemapSpider):
     name = "imobiliare_sitemap"
     country = "romania"
     locale = "ro"
@@ -149,8 +148,10 @@ class ImobiliareSitemapSpider(GeocodingMixin, SitemapSpider):
         # Debug: Log available selectors to understand page structure
         self.logger.debug(f"[DEBUG] H1 found: {response.css('h1::text').get()}")
         self.logger.debug(f"[DEBUG] Title tag: {response.css('title::text').get()}")
-        self.logger.debug(f"[DEBUG] JSON-LD scripts: {len(response.css('script[type=\"application/ld+json\"]').getall())}")
-        self.logger.debug(f"[DEBUG] Meta og:title: {response.css('meta[property=\"og:title\"]::attr(content)').get()}")
+        json_ld_selector = 'script[type="application/ld+json"]'
+        self.logger.debug(f"[DEBUG] JSON-LD scripts: {len(response.css(json_ld_selector).getall())}")
+        meta_og_selector = 'meta[property="og:title"]::attr(content)'
+        self.logger.debug(f"[DEBUG] Meta og:title: {response.css(meta_og_selector).get()}")
 
         # Initialize item
         item = {}

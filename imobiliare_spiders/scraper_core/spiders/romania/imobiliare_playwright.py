@@ -16,10 +16,9 @@ from datetime import datetime
 from ...helper import safe_int, safe_float
 from ...models import DealTypeEnum, PropertyStatusEnum
 from ...property_type_mapping_ro import standardize_property_type
-from ..geocoding_mixin import GeocodingMixin
 
 
-class ImobiliarePlaywrightSpider(GeocodingMixin, scrapy.Spider):
+class ImobiliarePlaywrightSpider(scrapy.Spider):
     name = "imobiliare_playwright"
     country = "romania"
     locale = "ro"

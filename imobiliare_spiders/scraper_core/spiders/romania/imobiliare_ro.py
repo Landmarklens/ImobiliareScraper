@@ -13,10 +13,9 @@ from ...models import DealTypeEnum, PropertyStatusEnum
 from ...property_type_mapping_ro import standardize_property_type
 from ...utils.property_status_detector import PropertyStatusDetector
 from ..base_sitemap_spider import SmartSitemapSpider
-from ..geocoding_mixin import GeocodingMixin
 
 
-class ImobiliareRoSpider(GeocodingMixin, SmartSitemapSpider):
+class ImobiliareRoSpider(SmartSitemapSpider):
     name = "imobiliare_ro"
     country = "romania"
     locale = "ro"
@@ -260,12 +259,7 @@ class ImobiliareRoSpider(GeocodingMixin, SmartSitemapSpider):
                 address_components.append(item['county'])
             address_components.append('Romania')
 
-            if address_components:
-                full_address = ', '.join(filter(None, address_components))
-                coords = self.geocode_address(full_address)
-                if coords:
-                    item['latitude'] = coords['latitude']
-                    item['longitude'] = coords['longitude']
+            # Geocoding removed - coordinates not extracted
 
         # Zip code (rarely available)
         item['zip_code'] = response.css('span.cod-postal::text').get()
