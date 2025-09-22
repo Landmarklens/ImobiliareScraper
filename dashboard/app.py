@@ -185,58 +185,94 @@ def scraped_properties():
 @app.route('/api/price-decreases')
 @basic_auth.required
 def price_decreases():
-    """Get top 100 properties with highest price decrease over 2 months"""
+    """Get properties with price drops using new price history fields"""
     try:
         conn, tunnel = get_db_connection()
         cur = conn.cursor()
 
-        cur.execute("""
-            WITH price_changes AS (
-                SELECT DISTINCT ON (external_id)
-                    p1.external_id,
-                    p1.title,
-                    p1.city,
-                    p1.address,
-                    p1.external_url,
-                    p1.property_type,
-                    p1.square_meters,
-                    p1.room_count,
-                    COALESCE(p1.price_ron, p1.price_eur * 5) as current_price,
-                    p1.currency,
-                    p1.created_at as latest_date,
-                    (
-                        SELECT COALESCE(p2.price_ron, p2.price_eur * 5)
-                        FROM properties_romania p2
-                        WHERE p2.external_id = p1.external_id
-                        AND p2.created_at < p1.created_at
-                        AND p2.created_at > NOW() - INTERVAL '2 months'
-                        ORDER BY p2.created_at ASC
-                        LIMIT 1
-                    ) as original_price
-                FROM properties_romania p1
-                WHERE p1.created_at > NOW() - INTERVAL '2 months'
-                ORDER BY p1.external_id, p1.created_at DESC
-            )
-            SELECT
-                external_id,
-                title,
-                city,
-                address,
-                external_url,
-                property_type,
-                square_meters,
-                room_count,
-                current_price,
-                original_price,
-                currency,
-                latest_date,
-                (original_price - current_price) as price_decrease,
-                ROUND(((original_price - current_price) / NULLIF(original_price, 0) * 100)::numeric, 2) as decrease_percentage
-            FROM price_changes
-            WHERE original_price > current_price
-            AND original_price IS NOT NULL
-            ORDER BY price_decrease DESC
-            LIMIT 100
+        # First try using new price history columns if they exist
+        try:
+            cur.execute("""
+                SELECT
+                    fingerprint,
+                    external_id,
+                    title,
+                    city,
+                    address,
+                    external_url,
+                    property_type,
+                    square_meters,
+                    room_count,
+                    price_ron as current_price,
+                    previous_price_ron as original_price,
+                    price_change_ron as price_decrease,
+                    price_change_percentage as decrease_percentage,
+                    currency,
+                    price_last_changed as latest_date,
+                    price_change_count,
+                    price_drop_alert
+                FROM properties_romania
+                WHERE price_change_percentage < 0
+                AND price_last_changed > NOW() - INTERVAL '30 days'
+                AND status = 'ad_active'
+                ORDER BY price_change_percentage ASC
+                LIMIT 100
+            """)
+            results = cur.fetchall()
+
+            # If no results or columns don't exist, fall back to old query
+            if not results:
+                raise Exception("No results with new columns")
+
+        except:
+            # Fallback to original query if new columns don't exist
+            cur.execute("""
+                WITH price_changes AS (
+                    SELECT DISTINCT ON (external_id)
+                        p1.external_id,
+                        p1.title,
+                        p1.city,
+                        p1.address,
+                        p1.external_url,
+                        p1.property_type,
+                        p1.square_meters,
+                        p1.room_count,
+                        COALESCE(p1.price_ron, p1.price_eur * 5) as current_price,
+                        p1.currency,
+                        p1.created_at as latest_date,
+                        (
+                            SELECT COALESCE(p2.price_ron, p2.price_eur * 5)
+                            FROM properties_romania p2
+                            WHERE p2.external_id = p1.external_id
+                            AND p2.created_at < p1.created_at
+                            AND p2.created_at > NOW() - INTERVAL '2 months'
+                            ORDER BY p2.created_at ASC
+                            LIMIT 1
+                        ) as original_price
+                    FROM properties_romania p1
+                    WHERE p1.created_at > NOW() - INTERVAL '2 months'
+                    ORDER BY p1.external_id, p1.created_at DESC
+                )
+                SELECT
+                    external_id,
+                    title,
+                    city,
+                    address,
+                    external_url,
+                    property_type,
+                    square_meters,
+                    room_count,
+                    current_price,
+                    original_price,
+                    currency,
+                    latest_date,
+                    (original_price - current_price) as price_decrease,
+                    ROUND(((original_price - current_price) / NULLIF(original_price, 0) * 100)::numeric, 2) as decrease_percentage
+                FROM price_changes
+                WHERE original_price > current_price
+                AND original_price IS NOT NULL
+                ORDER BY price_decrease DESC
+                LIMIT 100
         """)
 
         properties = cur.fetchall()
@@ -282,6 +318,99 @@ def recent_properties():
         tunnel.stop()
 
         return jsonify(properties)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/price-history/<fingerprint>')
+@basic_auth.required
+def price_history(fingerprint):
+    """Get price history for a specific property"""
+    try:
+        conn, tunnel = get_db_connection()
+        cur = conn.cursor()
+
+        # Try to get price history from new column
+        try:
+            cur.execute("""
+                SELECT
+                    fingerprint,
+                    title,
+                    external_url,
+                    price_ron as current_price_ron,
+                    price_eur as current_price_eur,
+                    previous_price_ron,
+                    previous_price_eur,
+                    price_change_percentage,
+                    price_last_changed,
+                    price_change_count,
+                    highest_price_ron,
+                    lowest_price_ron,
+                    price_history::text as history_json
+                FROM properties_romania
+                WHERE fingerprint = %s
+            """, (fingerprint,))
+
+            property_data = cur.fetchone()
+
+            if property_data and property_data.get('history_json'):
+                import json
+                try:
+                    property_data['price_history'] = json.loads(property_data['history_json'])
+                except:
+                    property_data['price_history'] = []
+                del property_data['history_json']
+
+        except:
+            property_data = None
+
+        cur.close()
+        conn.close()
+        tunnel.stop()
+
+        if property_data:
+            return jsonify(property_data)
+        else:
+            return jsonify({'error': 'Property not found'}), 404
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/price-alerts')
+@basic_auth.required
+def price_alerts():
+    """Get properties with active price drop alerts"""
+    try:
+        conn, tunnel = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT
+                fingerprint,
+                external_id,
+                title,
+                city,
+                external_url,
+                property_type,
+                room_count,
+                square_meters,
+                price_ron,
+                previous_price_ron,
+                price_change_percentage,
+                price_last_changed
+            FROM properties_romania
+            WHERE price_drop_alert = TRUE
+            AND status = 'ad_active'
+            ORDER BY price_last_changed DESC
+            LIMIT 50
+        """)
+
+        alerts = cur.fetchall()
+
+        cur.close()
+        conn.close()
+        tunnel.stop()
+
+        return jsonify(alerts)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
