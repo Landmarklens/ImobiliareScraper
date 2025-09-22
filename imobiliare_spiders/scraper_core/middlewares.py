@@ -12,6 +12,9 @@ import time
 from datetime import datetime, timedelta
 from scrapy.downloadermiddlewares.retry import RetryMiddleware
 from twisted.internet import defer
+import json
+from typing import Dict, List, Optional, Set
+from collections import defaultdict
 
 # useful for handling different item types with a single interface
 from itemadapter import is_item, ItemAdapter
@@ -109,59 +112,111 @@ class WebshareProxyMiddleware:
         self.api_key = api_key
         self.api_url = api_url
         self.refresh_hours = refresh_hours
-        self.proxies = []
         self.logger = logging.getLogger(__name__)
+
+        # Proxy pools with intelligent management
+        self.proxy_pools = {
+            'active': [],        # Currently working proxies
+            'quarantine': {},    # {proxy_address: {'until': datetime, 'failures': int}}
+            'blacklist': set()   # Permanently failed this session
+        }
+
+        # Replacement quota tracking
+        self.replacement_quota = {
+            'used': 0,
+            'limit': 100,  # Default limit, will be updated from API
+            'reset_date': None,
+            'last_check': None
+        }
+
+        # Performance metrics
+        self.proxy_metrics = defaultdict(lambda: {
+            'success': 0,
+            'failures': 0,
+            'last_success': None,
+            'last_failure': None,
+            'response_times': [],
+            'blocked_count': 0
+        })
+
+        # Quarantine settings
+        self.quarantine_durations = [
+            timedelta(minutes=30),   # First quarantine
+            timedelta(hours=2),      # Second quarantine
+            timedelta(hours=6)       # Third quarantine
+        ]
+
+        # General tracking
         self.proxy_usage = {}
         self.total_requests = 0
         self.proxied_requests = 0
         self.last_refresh_time = None
         self.refresh_interval = timedelta(hours=refresh_hours)
-        self.failed_proxy_attempts = {}  # Track failed attempts per proxy
-        self.max_proxy_failures = 3  # Max failures before removing a proxy
+        self.last_ondemand_refresh = None
+        self.ondemand_refresh_cooldown = timedelta(minutes=5)
 
     def spider_opened(self, spider):
-        self.refresh_proxies()  # Use refresh instead of fetch to set timestamp
-        if self.proxies:
-            spider.logger.info(f"Loaded {len(self.proxies)} proxies from webshare.io")
-            spider.logger.info(f"Proxies will refresh every {self.refresh_hours} hours")
+        self.refresh_proxies()  # Initial fetch
+        self.check_replacement_quota()  # Check initial quota
+
+        active_count = len(self.proxy_pools['active'])
+        if active_count > 0:
+            spider.logger.info(f"[PROXY_INIT] Loaded {active_count} active proxies from webshare.io")
+            spider.logger.info(f"[PROXY_QUOTA] Replacement quota: {self.replacement_quota['limit'] - self.replacement_quota['used']} remaining")
+            spider.logger.info(f"[PROXY_SETTINGS] Refresh interval: {self.refresh_hours}h, Max failures: 3")
+
             # Show sample proxies
-            for i, proxy_info in enumerate(self.proxies[:3]):
-                spider.logger.info(f"Proxy {i+1}: {proxy_info['address']}")
-            if len(self.proxies) > 3:
-                spider.logger.info(f"...and {len(self.proxies)-3} more proxies")
+            for i, proxy_info in enumerate(self.proxy_pools['active'][:3]):
+                spider.logger.info(f"[PROXY_SAMPLE] Proxy {i+1}: {proxy_info['address']}")
+            if active_count > 3:
+                spider.logger.info(f"[PROXY_INFO] ...and {active_count-3} more proxies available")
 
     def spider_closed(self, spider):
-        spider.logger.info(f"Proxy usage summary:")
-        spider.logger.info(f"- Total requests: {self.total_requests}")
+        spider.logger.info(f"[PROXY_SUMMARY] === Proxy Usage Summary ===")
+        spider.logger.info(f"[PROXY_STATS] Total requests: {self.total_requests}")
         spider.logger.info(
-            f"- Requests with proxy: {self.proxied_requests} ({self.proxied_requests/max(1, self.total_requests)*100:.1f}%)"
+            f"[PROXY_STATS] Proxied requests: {self.proxied_requests} ({self.proxied_requests/max(1, self.total_requests)*100:.1f}%)"
         )
 
-        if self.proxy_usage:
-            sorted_usage = sorted(
-                self.proxy_usage.items(), key=lambda x: x[1], reverse=True
+        # Pool status
+        spider.logger.info(f"[PROXY_POOLS] Active: {len(self.proxy_pools['active'])}, "
+                          f"Quarantined: {len(self.proxy_pools['quarantine'])}, "
+                          f"Blacklisted: {len(self.proxy_pools['blacklist'])}")
+
+        # Replacement quota
+        spider.logger.info(f"[PROXY_QUOTA] Replacements used: {self.replacement_quota['used']}/{self.replacement_quota['limit']}")
+
+        # Top performing proxies
+        if self.proxy_metrics:
+            sorted_metrics = sorted(
+                self.proxy_metrics.items(),
+                key=lambda x: x[1]['success'] / max(1, x[1]['success'] + x[1]['failures']),
+                reverse=True
             )
-            spider.logger.info("Top 5 most used proxies:")
-            for proxy_domain, count in sorted_usage[:5]:
-                spider.logger.info(f"- {proxy_domain}: {count} requests")
+            spider.logger.info("[PROXY_TOP] Top 5 best performing proxies:")
+            for proxy_addr, metrics in sorted_metrics[:5]:
+                success_rate = metrics['success'] / max(1, metrics['success'] + metrics['failures']) * 100
+                spider.logger.info(
+                    f"  - {proxy_addr}: {success_rate:.1f}% success "
+                    f"({metrics['success']}/{metrics['success'] + metrics['failures']} requests)"
+                )
 
     def fetch_proxies(self):
         """Fetch proxy list from webshare.io API"""
         try:
             url = f"{self.api_url}"
             headers = {"Authorization": f"Token {self.api_key}"}
-            params = {"mode": "direct", "page_size": 100}  # Add required mode parameter
+            params = {"mode": "direct", "page_size": 100}
 
-            self.logger.info(f"Fetching proxies from webshare.io API")
+            self.logger.info(f"[PROXY_FETCH] Fetching proxies from webshare.io API")
             response = requests.get(url, headers=headers, params=params, timeout=10)
 
             if response.status_code == 200:
                 data = response.json()
                 if "results" in data:
-                    self.proxies = []
+                    new_proxies = []
                     for proxy in data["results"]:
                         if proxy.get("valid"):
-                            # Store proxy info in a structured way
                             proxy_info = {
                                 'url': f"http://{proxy['username']}:{proxy['password']}@{proxy['proxy_address']}:{proxy['port']}",
                                 'host': proxy['proxy_address'],
@@ -169,19 +224,25 @@ class WebshareProxyMiddleware:
                                 'username': proxy['username'],
                                 'password': proxy['password'],
                                 'address': f"{proxy['proxy_address']}:{proxy['port']}",
-                                'country_code': proxy.get('country_code', 'Unknown')
+                                'country_code': proxy.get('country_code', 'Unknown'),
+                                'id': proxy.get('id')  # Store ID for replacement API
                             }
-                            self.proxies.append(proxy_info)
 
-                    self.logger.info(f"Successfully loaded {len(self.proxies)} proxies")
+                            # Don't add if blacklisted
+                            if proxy_info['address'] not in self.proxy_pools['blacklist']:
+                                new_proxies.append(proxy_info)
+
+                    # Update active pool, preserving non-blacklisted proxies
+                    self.proxy_pools['active'] = new_proxies
+                    self.logger.info(f"[PROXY_FETCH] Successfully loaded {len(new_proxies)} proxies")
                 else:
-                    self.logger.error("No proxy results found in webshare.io response")
+                    self.logger.error("[PROXY_FETCH] No proxy results found in response")
             else:
                 self.logger.error(
-                    f"Failed to fetch proxies: {response.status_code} - {response.text}"
+                    f"[PROXY_FETCH] Failed to fetch proxies: {response.status_code} - {response.text}"
                 )
         except Exception as e:
-            self.logger.error(f"Error fetching webshare proxies: {str(e)}")
+            self.logger.error(f"[PROXY_FETCH] Error fetching proxies: {str(e)}")
     
     def should_refresh_proxies(self):
         """Check if it's time to refresh proxies"""
@@ -193,183 +254,486 @@ class WebshareProxyMiddleware:
     
     def refresh_proxies(self):
         """Fetch fresh proxy list from webshare.io API"""
-        self.logger.info(f"Refreshing proxy list from webshare.io...")
-        
+        self.logger.info(f"[PROXY_REFRESH] Refreshing proxy list...")
+
         # Store old proxies in case refresh fails
-        old_proxies = self.proxies.copy() if self.proxies else []
-        
+        old_active = self.proxy_pools['active'].copy()
+
         try:
             self.fetch_proxies()
             self.last_refresh_time = datetime.now()
-            
-            if len(self.proxies) > 0:
-                self.failed_proxy_attempts.clear()  # Reset failure tracking on successful refresh
+
+            if len(self.proxy_pools['active']) > 0:
+                # Clear quarantine on successful refresh (but not blacklist)
+                self.proxy_pools['quarantine'].clear()
                 self.logger.info(
-                    f"Proxy refresh complete. Old count: {len(old_proxies)}, New count: {len(self.proxies)}"
+                    f"[PROXY_REFRESH] Complete. Old: {len(old_active)}, New: {len(self.proxy_pools['active'])}"
                 )
             else:
                 # Restore old proxies if refresh returned empty
-                self.logger.error("Refresh returned no proxies! Keeping old proxies.")
-                self.proxies = old_proxies
-            
+                self.logger.error("[PROXY_REFRESH] No proxies returned! Keeping old proxies.")
+                self.proxy_pools['active'] = old_active
+
         except Exception as e:
-            self.logger.error(f"Failed to refresh proxies: {e}. Keeping old proxies.")
-            self.proxies = old_proxies
+            self.logger.error(f"[PROXY_REFRESH] Failed: {e}. Keeping old proxies.")
+            self.proxy_pools['active'] = old_active
     
-    def get_random_proxy(self):
-        """Get a random working proxy, filtering out failed ones"""
-        if not self.proxies:
-            return None
-        
-        # Handle both string and dict proxy formats
-        if isinstance(self.proxies[0], str):
-            # Legacy format: proxies are strings
-            # Convert to dict format for consistency
-            proxy_url = random.choice(self.proxies)
-            return {
-                'url': proxy_url,
-                'address': proxy_url.split('@')[-1] if '@' in proxy_url else proxy_url,
-                'host': '',
-                'port': '',
-                'username': '',
-                'password': ''
-            }
-        
-        # Modern format: proxies are dicts
-        # Filter out proxies that have failed too many times
-        working_proxies = [
-            p for p in self.proxies 
-            if self.failed_proxy_attempts.get(p['address'], 0) < self.max_proxy_failures
-        ]
-        
-        if not working_proxies:
-            # All proxies have failed, reset failure counts and try again
-            self.logger.warning("All proxies have failed. Resetting failure counts.")
-            self.failed_proxy_attempts.clear()
-            working_proxies = self.proxies
-        
-        return random.choice(working_proxies) if working_proxies else None
+    def get_best_proxy(self) -> Optional[Dict]:
+        """Get the best available proxy using intelligent selection"""
+
+        # First, check quarantine and recover proxies if cooldown expired
+        self._check_quarantine_recovery()
+
+        # Get available proxies (active + recovered from quarantine)
+        available_proxies = self.proxy_pools['active'].copy()
+
+        if not available_proxies:
+            # No active proxies, try emergency recovery
+            return self._emergency_proxy_recovery()
+
+        # Sort by success rate (best performers first)
+        def proxy_score(proxy):
+            addr = proxy['address']
+            metrics = self.proxy_metrics[addr]
+            total = metrics['success'] + metrics['failures']
+            if total == 0:
+                return 0.5  # Neutral score for unused proxies
+            return metrics['success'] / total
+
+        # Sort proxies by performance
+        sorted_proxies = sorted(available_proxies, key=proxy_score, reverse=True)
+
+        # Use weighted random selection (better proxies more likely)
+        # Top 20% get 50% chance, next 30% get 30% chance, rest get 20%
+        total = len(sorted_proxies)
+        if total >= 5:
+            weights = []
+            top_20_percent = max(1, int(total * 0.2))
+            next_30_percent = max(1, int(total * 0.3))
+
+            for i in range(total):
+                if i < top_20_percent:
+                    weights.append(5)  # Higher weight for top performers
+                elif i < top_20_percent + next_30_percent:
+                    weights.append(3)  # Medium weight
+                else:
+                    weights.append(1)  # Lower weight for poor performers
+
+            return random.choices(sorted_proxies, weights=weights, k=1)[0]
+        else:
+            # Too few proxies, just pick randomly
+            return random.choice(sorted_proxies)
     
-    def mark_proxy_failure(self, proxy_address):
-        """Mark a proxy as having failed"""
+    def mark_proxy_failure(self, proxy_address: str, status_code: int = None):
+        """Mark a proxy as having failed with intelligent handling"""
         if not proxy_address or proxy_address == "unknown":
             return
-            
-        self.failed_proxy_attempts[proxy_address] = self.failed_proxy_attempts.get(proxy_address, 0) + 1
-        failure_count = self.failed_proxy_attempts[proxy_address]
-        
-        if failure_count >= self.max_proxy_failures:
-            self.logger.warning(f"Proxy {proxy_address} has failed {failure_count} times and will be avoided")
+
+        # Update metrics
+        metrics = self.proxy_metrics[proxy_address]
+        metrics['failures'] += 1
+        metrics['last_failure'] = datetime.now()
+
+        # Handle based on failure type
+        if status_code == 403:
+            # Cloudflare block - quarantine
+            metrics['blocked_count'] += 1
+            self._quarantine_proxy(proxy_address, metrics['blocked_count'])
+
+            # Check if replacement needed
+            if metrics['blocked_count'] >= 2:
+                self._try_replace_proxy(proxy_address)
+
+        elif status_code == 407:
+            # Auth failure - likely bad proxy, blacklist immediately
+            self.logger.warning(f"[PROXY_AUTH_FAIL] Blacklisting {proxy_address} due to auth failure")
+            self._blacklist_proxy(proxy_address)
+            self._try_replace_proxy(proxy_address)
+
+        elif status_code in [429, 503]:
+            # Rate limit - temporary quarantine
+            self._quarantine_proxy(proxy_address, 1)  # Short quarantine
+
+        else:
+            # General failure
+            if metrics['failures'] >= 3:
+                self._quarantine_proxy(proxy_address, 2)  # Medium quarantine
+
+    def _quarantine_proxy(self, proxy_address: str, severity: int = 1):
+        """Move proxy to quarantine with time-based recovery"""
+        # Find the proxy data before removing
+        proxy_data = next(
+            (p for p in self.proxy_pools['active'] if p['address'] == proxy_address),
+            None
+        )
+
+        # Remove from active pool
+        self.proxy_pools['active'] = [
+            p for p in self.proxy_pools['active']
+            if p['address'] != proxy_address
+        ]
+
+        # Calculate quarantine duration based on severity
+        duration_index = min(severity - 1, len(self.quarantine_durations) - 1)
+        duration = self.quarantine_durations[duration_index]
+        until = datetime.now() + duration
+
+        # Add to quarantine
+        self.proxy_pools['quarantine'][proxy_address] = {
+            'until': until,
+            'failures': severity,
+            'proxy_data': proxy_data
+        }
+
+        self.logger.info(
+            f"[PROXY_QUARANTINE] {proxy_address} quarantined until {until.strftime('%H:%M:%S')} "
+            f"(severity: {severity}, duration: {duration})"
+        )
+
+    def _blacklist_proxy(self, proxy_address: str):
+        """Permanently blacklist a proxy for this session"""
+        # Remove from all pools
+        self.proxy_pools['active'] = [
+            p for p in self.proxy_pools['active']
+            if p['address'] != proxy_address
+        ]
+        self.proxy_pools['quarantine'].pop(proxy_address, None)
+        self.proxy_pools['blacklist'].add(proxy_address)
+
+        self.logger.warning(f"[PROXY_BLACKLIST] {proxy_address} permanently blacklisted")
+
+    def _check_quarantine_recovery(self):
+        """Check and recover proxies from quarantine if cooldown expired"""
+        now = datetime.now()
+        recovered = []
+
+        for proxy_addr, info in list(self.proxy_pools['quarantine'].items()):
+            if now >= info['until']:
+                # Recover proxy
+                proxy_data = info.get('proxy_data')
+                if proxy_data and proxy_data not in self.proxy_pools['active']:
+                    self.proxy_pools['active'].append(proxy_data)
+                    recovered.append(proxy_addr)
+
+                    # Reset some metrics for fresh start
+                    metrics = self.proxy_metrics[proxy_addr]
+                    metrics['blocked_count'] = max(0, metrics['blocked_count'] - 1)
+
+        # Remove recovered proxies from quarantine
+        for addr in recovered:
+            del self.proxy_pools['quarantine'][addr]
+            self.logger.info(f"[PROXY_RECOVERY] {addr} recovered from quarantine")
+
+    def _emergency_proxy_recovery(self) -> Optional[Dict]:
+        """Emergency recovery when no proxies available"""
+        self.logger.warning("[PROXY_EMERGENCY] No active proxies available, attempting recovery...")
+
+        # 1. Try to recover from quarantine immediately
+        if self.proxy_pools['quarantine']:
+            # Get least recently quarantined
+            earliest_addr = min(
+                self.proxy_pools['quarantine'].keys(),
+                key=lambda x: self.proxy_pools['quarantine'][x]['until']
+            )
+            info = self.proxy_pools['quarantine'][earliest_addr]
+            proxy_data = info.get('proxy_data')
+
+            if proxy_data:
+                self.logger.info(f"[PROXY_EMERGENCY] Force recovering {earliest_addr} from quarantine")
+                del self.proxy_pools['quarantine'][earliest_addr]
+                self.proxy_pools['active'].append(proxy_data)
+                return proxy_data
+
+        # 2. Try on-demand refresh if cooldown passed
+        if self._can_ondemand_refresh():
+            self.logger.info("[PROXY_EMERGENCY] Attempting on-demand refresh...")
+            self._ondemand_refresh()
+            if self.proxy_pools['active']:
+                return random.choice(self.proxy_pools['active'])
+
+        # 3. As last resort, clear blacklist and refresh
+        if self.proxy_pools['blacklist']:
+            self.logger.warning("[PROXY_EMERGENCY] Clearing blacklist and refreshing...")
+            self.proxy_pools['blacklist'].clear()
+            self.refresh_proxies()
+            if self.proxy_pools['active']:
+                return random.choice(self.proxy_pools['active'])
+
+        self.logger.error("[PROXY_EMERGENCY] All recovery attempts failed!")
+        return None
+
+    def check_replacement_quota(self):
+        """Check remaining replacement quota from Webshare API"""
+        try:
+            headers = {"Authorization": f"Token {self.api_key}"}
+            # This endpoint would need to be confirmed with Webshare docs
+            response = requests.get(
+                "https://proxy.webshare.io/api/v2/proxy/config/",
+                headers=headers,
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                # Update quota info based on API response
+                # Structure depends on actual API response
+                self.replacement_quota['limit'] = data.get('replacement_limit', 100)
+                self.replacement_quota['used'] = data.get('replacements_used', 0)
+                self.replacement_quota['reset_date'] = data.get('reset_date')
+                self.replacement_quota['last_check'] = datetime.now()
+
+                self.logger.info(
+                    f"[PROXY_QUOTA] Checked: {self.replacement_quota['limit'] - self.replacement_quota['used']} "
+                    f"replacements remaining"
+                )
+        except Exception as e:
+            self.logger.debug(f"[PROXY_QUOTA] Could not check quota: {e}")
+
+    def _try_replace_proxy(self, proxy_address: str):
+        """Try to replace a blocked proxy if quota available"""
+        # Check if we have quota
+        remaining = self.replacement_quota['limit'] - self.replacement_quota['used']
+
+        if remaining <= 0:
+            self.logger.warning(f"[PROXY_REPLACE] No replacement quota remaining, keeping {proxy_address}")
+            return False
+
+        # Find proxy ID if available
+        proxy_data = next(
+            (p for p in self.proxy_pools['active'] if p['address'] == proxy_address),
+            None
+        )
+
+        if not proxy_data or not proxy_data.get('id'):
+            self.logger.debug(f"[PROXY_REPLACE] No proxy ID for {proxy_address}, cannot request replacement")
+            return False
+
+        try:
+            headers = {"Authorization": f"Token {self.api_key}"}
+
+            # Request replacement (actual endpoint needs verification)
+            response = requests.post(
+                "https://proxy.webshare.io/api/v2/proxy-replacement/proxy_replacement/proxy_replacement_create",
+                headers=headers,
+                json={
+                    "proxy_id": proxy_data['id'],
+                    "reason": "blocked"
+                },
+                timeout=10
+            )
+
+            if response.status_code in [200, 201]:
+                self.replacement_quota['used'] += 1
+                self.logger.info(
+                    f"[PROXY_REPLACE] Successfully requested replacement for {proxy_address}. "
+                    f"Quota remaining: {self.replacement_quota['limit'] - self.replacement_quota['used']}"
+                )
+
+                # Blacklist the old proxy
+                self._blacklist_proxy(proxy_address)
+
+                # Trigger proxy refresh to get the replacement
+                time.sleep(2)  # Give API time to process
+                self.refresh_proxies()
+                return True
+            else:
+                self.logger.error(
+                    f"[PROXY_REPLACE] Failed to replace {proxy_address}: "
+                    f"{response.status_code} - {response.text[:200]}"
+                )
+        except Exception as e:
+            self.logger.error(f"[PROXY_REPLACE] Error replacing proxy: {e}")
+
+        return False
+
+    def _can_ondemand_refresh(self) -> bool:
+        """Check if we can do an on-demand refresh (rate limited)"""
+        if not self.last_ondemand_refresh:
+            return True
+
+        time_since = datetime.now() - self.last_ondemand_refresh
+        return time_since >= self.ondemand_refresh_cooldown
+
+    def _ondemand_refresh(self):
+        """Force an on-demand proxy list refresh"""
+        if not self._can_ondemand_refresh():
+            self.logger.debug("[PROXY_ONDEMAND] Cooldown not expired, skipping")
+            return
+
+        try:
+            headers = {"Authorization": f"Token {self.api_key}"}
+            response = requests.post(
+                "https://proxy.webshare.io/api/v2/proxy-list/ondemand_refresh",
+                headers=headers,
+                timeout=10
+            )
+
+            if response.status_code in [200, 201]:
+                self.logger.info("[PROXY_ONDEMAND] On-demand refresh triggered successfully")
+                self.last_ondemand_refresh = datetime.now()
+
+                # Wait a moment then fetch new proxies
+                time.sleep(3)
+                self.fetch_proxies()
+            else:
+                self.logger.error(
+                    f"[PROXY_ONDEMAND] Failed: {response.status_code} - {response.text[:200]}"
+                )
+        except Exception as e:
+            self.logger.error(f"[PROXY_ONDEMAND] Error: {e}")
 
     def process_request(self, request, spider):
         self.total_requests += 1
 
-        # Check if we need to refresh proxies (but not on every request to avoid overhead)
-        if self.total_requests % 100 == 0:  # Check every 100 requests
-            if self.should_refresh_proxies():
-                spider.logger.info("Proxy refresh interval reached, refreshing proxy list...")
-                self.refresh_proxies()
+        # Periodic maintenance checks
+        if self.total_requests % 50 == 0:  # Every 50 requests
+            # Check quarantine recovery
+            self._check_quarantine_recovery()
 
-        if not self.proxies:
-            spider.logger.warning(
-                "No proxies available, attempting to fetch..."
-            )
-            self.refresh_proxies()
-            
-            if not self.proxies:
-                spider.logger.error(
-                    "No proxies available after refresh attempt. Check WEBSHARE_API_KEY."
-                )
+            # Check if refresh needed
+            if self.total_requests % 100 == 0:
+                if self.should_refresh_proxies():
+                    spider.logger.info("[PROXY_REFRESH] Scheduled refresh interval reached")
+                    self.refresh_proxies()
+
+                # Periodically check quota
+                if self.total_requests % 500 == 0:
+                    self.check_replacement_quota()
+
+        # Check proxy availability
+        if not self.proxy_pools['active']:
+            spider.logger.warning("[PROXY_WARNING] No active proxies, attempting recovery...")
+            proxy_data = self._emergency_proxy_recovery()
+            if not proxy_data:
+                spider.logger.error("[PROXY_ERROR] No proxies available after recovery attempts")
                 return
 
-        # Handle retry scenario - need to assign a new proxy
+        # Handle retry scenario - need different proxy
         if "proxy" in request.meta:
             if request.meta.get('retry_times', 0) > 0:
-                # This is a retry, we need to get a different proxy
-                old_proxy = request.meta.get('proxy', '')
-                
-                # Mark old proxy as failed if it was a proxy error
-                if request.meta.get('proxy_failed'):
-                    old_address = request.meta.get('proxy_address', '')
-                    if old_address:
-                        self.mark_proxy_failure(old_address)
-                        spider.logger.info(f"[PROXY_RETRY] Retry #{request.meta.get('retry_times')} for {request.url} - Previous proxy {old_address} marked as failed")
-                
-                # Select a new proxy for the retry
-                proxy_data = self.get_random_proxy()
+                # This is a retry, mark old proxy as failed
+                old_address = request.meta.get('proxy_address', '')
+                failure_status = request.meta.get('failure_status_code')
+
+                if request.meta.get('proxy_failed') and old_address:
+                    self.mark_proxy_failure(old_address, failure_status)
+                    spider.logger.info(
+                        f"[PROXY_RETRY] Retry #{request.meta.get('retry_times')} for {request.url} - "
+                        f"Previous proxy {old_address} marked as failed (status: {failure_status})"
+                    )
+
+                # Get new proxy for retry
+                proxy_data = self.get_best_proxy()
                 if not proxy_data:
-                    spider.logger.error(f"[PROXY_ERROR] No working proxies available for retry of {request.url}")
+                    spider.logger.error(f"[PROXY_ERROR] No proxies for retry of {request.url}")
                     return
-                
+
                 # Update proxy information
                 request.meta["proxy"] = proxy_data['url']
                 request.meta["proxy_full_url"] = proxy_data['url']
                 request.meta["proxy_address"] = proxy_data['address']
-                spider.logger.info(f"[PROXY_RETRY] Using new proxy {proxy_data['address']} for retry of {request.url}")
-                
-            # If not a retry and already has proxy, skip
+                spider.logger.info(
+                    f"[PROXY_RETRY] Using new proxy {proxy_data['address']} for retry"
+                )
+
+            # If not retry and already has proxy, skip
             else:
                 self.proxied_requests += 1
                 return
 
-        # New request without proxy - assign one
+        # New request without proxy - assign best available
         else:
-            proxy_data = self.get_random_proxy()
-            
+            proxy_data = self.get_best_proxy()
+
             if not proxy_data:
-                spider.logger.error(f"[PROXY_ERROR] No working proxies available for {request.url}")
+                spider.logger.error(f"[PROXY_ERROR] No proxies available for {request.url}")
                 return
-            
-            # Set proxy for request (proxy_data is always a dictionary from get_random_proxy)
+
+            # Set proxy metadata
             request.meta["proxy"] = proxy_data['url']
             request.meta["proxy_full_url"] = proxy_data['url']
             request.meta["proxy_address"] = proxy_data['address']
-            
+            request.meta["request_start_time"] = time.time()  # Track response time
+
             self.proxied_requests += 1
             self.proxy_usage[proxy_data['address']] = self.proxy_usage.get(proxy_data['address'], 0) + 1
-            
-            spider.logger.info(f"[PROXY_ASSIGN] Request #{self.total_requests}: Using proxy {proxy_data['address']} for {request.url}")
+
+            spider.logger.info(
+                f"[PROXY_ASSIGN] Request #{self.total_requests}: {proxy_data['address']} -> {request.url}"
+            )
 
     def process_response(self, request, response, spider):
         if "proxy" in request.meta:
             proxy_address = request.meta.get("proxy_address", "unknown")
             status = response.status
-            
-            # Log all responses with proxy info
-            if status == 200:
-                spider.logger.info(f"[PROXY_SUCCESS] {status} response for {request.url} using proxy {proxy_address}")
-            else:
-                spider.logger.warning(f"[PROXY_RESPONSE] {status} response for {request.url} using proxy {proxy_address}")
 
+            # Calculate response time
+            if "request_start_time" in request.meta:
+                response_time = time.time() - request.meta["request_start_time"]
+                metrics = self.proxy_metrics[proxy_address]
+                metrics['response_times'].append(response_time)
+                # Keep only last 100 response times
+                if len(metrics['response_times']) > 100:
+                    metrics['response_times'] = metrics['response_times'][-100:]
+
+            # Handle different response codes
             if 200 <= status < 300:
-                # Success - reset failure count for this proxy
-                if proxy_address in self.failed_proxy_attempts and proxy_address != "unknown":
-                    self.failed_proxy_attempts[proxy_address] = 0
-                    
+                # Success - update metrics
+                metrics = self.proxy_metrics[proxy_address]
+                metrics['success'] += 1
+                metrics['last_success'] = datetime.now()
+
+                spider.logger.info(
+                    f"[PROXY_SUCCESS] {status} from {proxy_address} for {request.url} "
+                    f"(response time: {response_time:.2f}s)"
+                )
+
             elif status == 407:
-                # Proxy authentication failed
-                spider.logger.error(f"[PROXY_AUTH_FAIL] Authentication failed (407) for {proxy_address} on {request.url}")
-                self.mark_proxy_failure(proxy_address)
-                
-                # Force refresh if too many proxies are failing auth
-                failed_count = sum(1 for v in self.failed_proxy_attempts.values() if v >= 2)
-                total_proxies = len(self.proxies) if self.proxies else 1  # Avoid division by zero
-                
-                if failed_count > total_proxies / 2:
-                    spider.logger.warning(f"[PROXY_REFRESH] {failed_count}/{total_proxies} proxies failing auth, forcing refresh...")
-                    self.refresh_proxies()
-                
-                # Mark for retry with different proxy
+                # Proxy authentication failed - immediate blacklist
+                spider.logger.error(
+                    f"[PROXY_AUTH_FAIL] 407 Auth failed for {proxy_address} on {request.url}"
+                )
+                self.mark_proxy_failure(proxy_address, 407)
                 request.meta['proxy_failed'] = True
-                
-            elif status in [403, 429]:
-                # Blocked or rate limited
-                spider.logger.warning(f"[PROXY_BLOCKED] {status} - Blocked/Rate limited for {request.url} using proxy {proxy_address}")
-                self.mark_proxy_failure(proxy_address)
+                request.meta['failure_status_code'] = 407
+
+            elif status == 403:
+                # Cloudflare block - quarantine and maybe replace
+                spider.logger.warning(
+                    f"[PROXY_BLOCKED] 403 Blocked for {proxy_address} on {request.url}"
+                )
+                self.mark_proxy_failure(proxy_address, 403)
                 request.meta['proxy_failed'] = True
+                request.meta['failure_status_code'] = 403
+
+            elif status == 429:
+                # Rate limited - temporary quarantine
+                spider.logger.warning(
+                    f"[PROXY_RATELIMIT] 429 Rate limited for {proxy_address} on {request.url}"
+                )
+                self.mark_proxy_failure(proxy_address, 429)
+                request.meta['proxy_failed'] = True
+                request.meta['failure_status_code'] = 429
+
+            elif status in [500, 502, 503, 504]:
+                # Server errors - might not be proxy's fault
+                spider.logger.info(
+                    f"[PROXY_SERVER_ERROR] {status} from {proxy_address} for {request.url} "
+                    "(server error, not counting as proxy failure)"
+                )
+
+            else:
+                # Other non-success codes
+                spider.logger.warning(
+                    f"[PROXY_RESPONSE] {status} from {proxy_address} for {request.url}"
+                )
+                metrics = self.proxy_metrics[proxy_address]
+                metrics['failures'] += 1
+                metrics['last_failure'] = datetime.now()
+
         else:
-            # Log direct requests (no proxy)
-            spider.logger.info(f"[DIRECT_REQUEST] {response.status} response for {request.url} (no proxy)")
+            # Direct request (no proxy)
+            spider.logger.info(f"[DIRECT_REQUEST] {response.status} response for {request.url}")
 
         return response
 
