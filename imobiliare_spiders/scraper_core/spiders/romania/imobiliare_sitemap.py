@@ -131,8 +131,7 @@ class ImobiliareSitemapSpider(SitemapSpider):
         """Parse individual property page from sitemap"""
         self.logger.info(f"[PARSE_PROPERTY] Processing: {response.url} (Status: {response.status})")
         self.logger.info(f"[PARSE_HEADERS] Headers sent: {response.request.headers}")
-        self.logger.info(f"[PARSE_COOKIES] Cookies: {response.request.cookies}")
-        self.logger.info(f"[PARSE_META] Request meta: {response.request.meta}")
+        self.logger.info(f"[PARSE_META] Request meta keys: {list(response.request.meta.keys())}")
 
         # Check if property exists (404, etc.)
         if response.status != 200:
@@ -150,7 +149,6 @@ class ImobiliareSitemapSpider(SitemapSpider):
             self.logger.info(f"[BLOCKED_CONTENT] Response length: {len(response.text)} bytes")
             self.logger.info(f"[BLOCKED_HEADERS] Response headers: {response.headers}")
             self.logger.info(f"[BLOCKED_STATUS] Response status: {response.status}")
-            self.logger.info(f"[BLOCKED_COOKIES] Response cookies: {response.cookies}")
             self.logger.info(f"[BLOCKED_SAMPLE] First 1000 chars: {response.text[:1000]}")
             # Save a sample for inspection
             import os
@@ -169,7 +167,6 @@ class ImobiliareSitemapSpider(SitemapSpider):
         # Log successful response details
         self.logger.info(f"[SUCCESS_PARSE] Processing {response.url} - Content length: {len(response.text)} bytes")
         self.logger.info(f"[SUCCESS_HEADERS] Response headers: {response.headers}")
-        self.logger.info(f"[SUCCESS_COOKIES] Response cookies: {response.cookies}")
 
         # Check for various page indicators
         has_title_tag = '<title>' in response.text
