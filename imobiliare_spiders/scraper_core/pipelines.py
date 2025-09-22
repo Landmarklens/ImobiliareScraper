@@ -13,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 
 from .models import SpiderResultRomania, ScrapeJob, PropertyStatusEnum
 from .settings import DB_CONNECTION_STRING
+import json
 
 
 class ValidationPipeline:
@@ -153,6 +154,13 @@ class RomaniaDatabasePipeline:
             utilities_cost=item.get('utilities_cost'),
             maintenance_cost=item.get('maintenance_cost'),
 
+            # Initialize price tracking fields
+            highest_price_ron=item.get('price_ron'),
+            lowest_price_ron=item.get('price_ron'),
+            price_change_count=0,
+            price_history=json.dumps([]),  # Start with empty history
+            price_drop_alert=False,
+
             # Location
             country=item.get('country', 'Romania'),
             county=item.get('county'),
@@ -213,7 +221,109 @@ class RomaniaDatabasePipeline:
         return property_obj
 
     def _update_property(self, existing: SpiderResultRomania, item):
-        """Update existing property with new data"""
+        """Update existing property with new data and track price changes"""
+
+        # Track price changes BEFORE updating
+        old_price_ron = existing.price_ron
+        old_price_eur = existing.price_eur
+        new_price_ron = item.get('price_ron')
+        new_price_eur = item.get('price_eur')
+
+        price_changed = False
+
+        # Check if RON price changed
+        if old_price_ron and new_price_ron and old_price_ron != new_price_ron:
+            price_changed = True
+
+            # Initialize price history if needed
+            if existing.price_history is None or existing.price_history == '':
+                price_history_list = []
+            else:
+                # Parse existing JSON string
+                try:
+                    price_history_list = json.loads(existing.price_history)
+                except:
+                    price_history_list = []
+
+            # Append to price history
+            history_entry = {
+                'date': datetime.utcnow().isoformat(),
+                'ron': float(old_price_ron),
+                'eur': float(old_price_eur) if old_price_eur else None
+            }
+            price_history_list.append(history_entry)
+
+            # Convert back to JSON string
+            existing.price_history = json.dumps(price_history_list)
+
+            # Store previous price
+            existing.previous_price_ron = old_price_ron
+            existing.previous_price_eur = old_price_eur
+
+            # Calculate changes
+            existing.price_change_ron = new_price_ron - old_price_ron
+            existing.price_change_percentage = ((new_price_ron - old_price_ron) / old_price_ron) * 100
+
+            # Update tracking fields
+            existing.price_last_changed = datetime.utcnow()
+            existing.price_change_count = (existing.price_change_count or 0) + 1
+
+            # Update high/low tracking
+            if existing.highest_price_ron is None or new_price_ron > existing.highest_price_ron:
+                existing.highest_price_ron = new_price_ron
+            if existing.lowest_price_ron is None or new_price_ron < existing.lowest_price_ron:
+                existing.lowest_price_ron = new_price_ron
+
+            # Set alert for significant drops
+            if existing.price_change_percentage <= -5:
+                existing.price_drop_alert = True
+                logging.info(f"[PRICE_DROP_ALERT] {existing.fingerprint}: {old_price_ron} -> {new_price_ron} ({existing.price_change_percentage:.1f}%)")
+            else:
+                existing.price_drop_alert = False
+
+        # Check if EUR price changed (if no RON change detected)
+        elif old_price_eur and new_price_eur and old_price_eur != new_price_eur and not price_changed:
+            price_changed = True
+
+            # Initialize price history if needed
+            if existing.price_history is None or existing.price_history == '':
+                price_history_list = []
+            else:
+                # Parse existing JSON string
+                try:
+                    price_history_list = json.loads(existing.price_history)
+                except:
+                    price_history_list = []
+
+            # Append to price history
+            history_entry = {
+                'date': datetime.utcnow().isoformat(),
+                'ron': float(old_price_ron) if old_price_ron else None,
+                'eur': float(old_price_eur)
+            }
+            price_history_list.append(history_entry)
+
+            # Convert back to JSON string
+            existing.price_history = json.dumps(price_history_list)
+
+            # Store previous price
+            existing.previous_price_eur = old_price_eur
+            existing.price_change_eur = new_price_eur - old_price_eur
+            existing.price_change_percentage = ((new_price_eur - old_price_eur) / old_price_eur) * 100
+            existing.price_last_changed = datetime.utcnow()
+            existing.price_change_count = (existing.price_change_count or 0) + 1
+
+            # Set alert for significant drops
+            if existing.price_change_percentage <= -5:
+                existing.price_drop_alert = True
+                logging.info(f"[PRICE_DROP_ALERT] {existing.fingerprint}: EUR {old_price_eur} -> {new_price_eur} ({existing.price_change_percentage:.1f}%)")
+            else:
+                existing.price_drop_alert = False
+
+        # Log if price changed
+        if price_changed:
+            logging.info(f"[PRICE_CHANGE] Property {existing.fingerprint}: RON {old_price_ron} -> {new_price_ron}, EUR {old_price_eur} -> {new_price_eur}")
+
         # Update basic fields
         fields_to_update = [
             'title', 'description', 'property_type', 'deal_type', 'status',

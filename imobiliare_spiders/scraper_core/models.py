@@ -179,6 +179,19 @@ class SpiderResultRomania(SpiderResultBase):
     listing_date = Column(Date, nullable=True)
     last_updated = Column(Date, nullable=True)
 
+    # Price history tracking (added for price change monitoring)
+    price_history = Column('price_history', Text, nullable=True)  # JSONB in PostgreSQL
+    previous_price_ron = Column(Double, nullable=True)
+    previous_price_eur = Column(Double, nullable=True)
+    price_change_ron = Column(Double, nullable=True)
+    price_change_eur = Column(Double, nullable=True)
+    price_change_percentage = Column(Float, nullable=True)
+    price_last_changed = Column(DateTime, nullable=True)
+    price_change_count = Column(Integer, default=0)
+    price_drop_alert = Column(Boolean, default=False)
+    highest_price_ron = Column(Double, nullable=True)
+    lowest_price_ron = Column(Double, nullable=True)
+
     scrape_job: Mapped["ScrapeJob"] = relationship(
         "ScrapeJob",
         back_populates="results",
