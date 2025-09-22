@@ -115,7 +115,7 @@ class ImobiliareSitemapSpider(SitemapSpider):
                     count += 1
                     self.logger.info(f"[SITEMAP_FILTER] Accepting rental property {count}/{self.limit}: {url}")
                     yield entry
-                elif self.deal_type == 'buy' and ('vanzare' in url or 'vinde' in url):
+                elif self.deal_type == 'sale' and ('vanzare' in url or 'vinde' in url):
                     count += 1
                     self.logger.info(f"[SITEMAP_FILTER] Accepting sale property {count}/{self.limit}: {url}")
                     yield entry
