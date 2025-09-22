@@ -8,6 +8,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 from scrapy.http import HtmlResponse
+from scrapy import signals
+from scrapy.exceptions import IgnoreRequest
 import logging
 import time
 import random
@@ -29,11 +31,13 @@ class UndetectedChromeMiddleware:
     @classmethod
     def from_crawler(cls, crawler):
         """Initialize from crawler settings"""
-        return cls(
+        middleware = cls(
             driver_path=crawler.settings.get('CHROME_DRIVER_PATH'),
             headless=crawler.settings.getbool('SELENIUM_HEADLESS', True),
             proxy_enabled=crawler.settings.getbool('SELENIUM_PROXY_ENABLED', False)
         )
+        crawler.signals.connect(middleware.spider_closed, signal=signals.spider_closed)
+        return middleware
 
     def _create_driver(self, proxy_url=None):
         """Create a new undetected Chrome driver instance"""
@@ -133,8 +137,10 @@ class UndetectedChromeMiddleware:
 
         # Only use Selenium for individual property pages
         if '/oferta/' not in request.url or request.url.endswith('.xml'):
+            spider.logger.debug(f"[SELENIUM_SKIP] Not a property page, skipping: {request.url}")
             return None  # Let Scrapy handle sitemaps normally
 
+        spider.logger.info(f"[SELENIUM] Intercepting property page request: {request.url}")
         self.logger.info(f"[SELENIUM] Processing property page: {request.url}")
 
         try:
@@ -150,8 +156,15 @@ class UndetectedChromeMiddleware:
                 proxy_url = request.meta.get('proxy')
                 self.driver = self._create_driver(proxy_url)
                 if not self.driver:
-                    self.logger.error("[SELENIUM] Failed to create driver, falling back to Scrapy")
-                    return None
+                    self.logger.error(f"[SELENIUM] Failed to create driver for {request.url}")
+                    # Return an error response instead of None
+                    return HtmlResponse(
+                        url=request.url,
+                        status=500,
+                        body=b'<html><body>Selenium driver creation failed</body></html>',
+                        encoding='utf-8',
+                        request=request
+                    )
 
             # Load the page
             self.driver.get(request.url)
@@ -184,8 +197,14 @@ class UndetectedChromeMiddleware:
 
         except Exception as e:
             self.logger.error(f"[SELENIUM_ERROR] Failed to process {request.url}: {e}")
-            # Don't retry with Selenium, let it fail or use regular Scrapy
-            return None
+            # Return error response instead of None to prevent fallback to regular request
+            return HtmlResponse(
+                url=request.url,
+                status=500,
+                body=f'<html><body>Selenium error: {str(e)}</body></html>'.encode('utf-8'),
+                encoding='utf-8',
+                request=request
+            )
 
     def spider_closed(self, spider):
         """Clean up when spider closes"""
