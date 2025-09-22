@@ -130,6 +130,9 @@ class ImobiliareSitemapSpider(SitemapSpider):
     def parse(self, response):
         """Parse individual property page from sitemap"""
         self.logger.info(f"[PARSE_PROPERTY] Processing: {response.url} (Status: {response.status})")
+        self.logger.info(f"[PARSE_HEADERS] Headers sent: {response.request.headers}")
+        self.logger.info(f"[PARSE_COOKIES] Cookies: {response.request.cookies}")
+        self.logger.info(f"[PARSE_META] Request meta: {response.request.meta}")
 
         # Check if property exists (404, etc.)
         if response.status != 200:
@@ -145,6 +148,9 @@ class ImobiliareSitemapSpider(SitemapSpider):
             self.logger.error(f"[BLOCKED] Blocked by anti-bot on property page: {response.url}")
             # Log what we're actually getting
             self.logger.info(f"[BLOCKED_CONTENT] Response length: {len(response.text)} bytes")
+            self.logger.info(f"[BLOCKED_HEADERS] Response headers: {response.headers}")
+            self.logger.info(f"[BLOCKED_STATUS] Response status: {response.status}")
+            self.logger.info(f"[BLOCKED_COOKIES] Response cookies: {response.cookies}")
             self.logger.info(f"[BLOCKED_SAMPLE] First 1000 chars: {response.text[:1000]}")
             # Save a sample for inspection
             import os
@@ -162,11 +168,26 @@ class ImobiliareSitemapSpider(SitemapSpider):
 
         # Log successful response details
         self.logger.info(f"[SUCCESS_PARSE] Processing {response.url} - Content length: {len(response.text)} bytes")
+        self.logger.info(f"[SUCCESS_HEADERS] Response headers: {response.headers}")
+        self.logger.info(f"[SUCCESS_COOKIES] Response cookies: {response.cookies}")
+
+        # Check for various page indicators
+        has_title_tag = '<title>' in response.text
+        has_body_tag = '<body' in response.text
+        has_imobiliare_text = 'imobiliare.ro' in response.text
+        self.logger.info(f"[PAGE_CHECK] Has title tag: {has_title_tag}, Has body tag: {has_body_tag}, Has imobiliare text: {has_imobiliare_text}")
 
         # Check for price indicators in the response
         price_indicators = ['EUR', 'RON', 'lei', '€', 'euro']
         has_price_text = any(indicator in response.text for indicator in price_indicators)
         self.logger.info(f"[PRICE_CHECK] Has price indicators: {has_price_text}")
+
+        # Check for specific price patterns
+        import re
+        has_listing_price = 'listing_price' in response.text
+        has_price_json = '"price"' in response.text
+        has_wire_snapshot = 'wire:snapshot' in response.text
+        self.logger.info(f"[PRICE_PATTERNS] Has listing_price: {has_listing_price}, Has price JSON: {has_price_json}, Has Livewire: {has_wire_snapshot}")
 
         # Debug: Log available selectors to understand page structure
         self.logger.debug(f"[DEBUG] H1 found: {response.css('h1::text').get()}")
@@ -200,35 +221,45 @@ class ImobiliareSitemapSpider(SitemapSpider):
         # Try to extract from JSON-LD structured data
         json_ld = response.css('script[type="application/ld+json"]::text').get()
         if json_ld:
+            self.logger.info(f"[JSON_LD] Found JSON-LD data, length: {len(json_ld)}")
             try:
                 import json
                 data = json.loads(json_ld)
                 if isinstance(data, dict):
+                    self.logger.info(f"[JSON_LD] Keys in JSON-LD: {list(data.keys())}")
                     item['title'] = item['title'] or data.get('name')
                     item['description'] = data.get('description')
                     if 'offers' in data:
                         price_info = data['offers']
+                        self.logger.info(f"[JSON_LD_PRICE] Found offers: {price_info}")
                         if 'price' in price_info:
                             item['price'] = float(price_info['price'])
                             item['currency'] = price_info.get('priceCurrency', 'RON')
-            except:
-                pass
+                            self.logger.info(f"[JSON_LD_EXTRACTED] Price from JSON-LD: {item['price']} {item['currency']}")
+            except Exception as e:
+                self.logger.error(f"[JSON_LD_ERROR] Failed to parse JSON-LD: {e}")
 
         # Try to extract from dataLayer JavaScript (fallback for when JSON-LD is not available)
         if not item.get('price') and not item.get('price_ron') and not item.get('price_eur'):
             # Try dataLayer first
             datalayer_match = re.search(r'window\.dataLayer\.push\((.*?)\);', response.text, re.DOTALL)
             if datalayer_match:
+                self.logger.info(f"[DATALAYER] Found dataLayer.push, extracting...")
                 try:
                     # Extract the JavaScript object
                     js_obj = datalayer_match.group(1)
+                    self.logger.debug(f"[DATALAYER_CONTENT] First 500 chars: {js_obj[:500]}")
+
                     # Look for price and currency in the object
                     price_match = re.search(r'"listing_price"\s*:\s*"([0-9.]+)"', js_obj)
                     currency_match = re.search(r'"listing_currency"\s*:\s*"([A-Z]+)"', js_obj)
 
+                    self.logger.info(f"[DATALAYER_REGEX] Price match: {bool(price_match)}, Currency match: {bool(currency_match)}")
+
                     if price_match:
                         price = float(price_match.group(1))
                         currency = currency_match.group(1) if currency_match else 'RON'
+                        self.logger.info(f"[DATALAYER_VALUES] Extracted price: {price}, currency: {currency}")
 
                         if currency == 'EUR':
                             item['price_eur'] = price
@@ -236,25 +267,36 @@ class ImobiliareSitemapSpider(SitemapSpider):
                             item['price_ron'] = price
                         item['currency'] = currency
                         self.logger.info(f"[PRICE_FROM_DATALAYER] Found price {price} {currency} from dataLayer")
+                    else:
+                        self.logger.warning(f"[DATALAYER_NO_PRICE] No price found in dataLayer")
                 except Exception as e:
-                    self.logger.debug(f"[DATALAYER_ERROR] Could not extract price from dataLayer: {e}")
+                    self.logger.error(f"[DATALAYER_ERROR] Could not extract price from dataLayer: {e}")
+            else:
+                self.logger.info(f"[DATALAYER_NOT_FOUND] No dataLayer.push found in response")
 
             # Try Livewire data as another fallback
             if not item.get('price_ron') and not item.get('price_eur'):
+                self.logger.info(f"[LIVEWIRE_SEARCH] Searching for Livewire data...")
                 # Look for Livewire wire:snapshot data
                 livewire_match = re.search(r'wire:snapshot="([^"]+)"', response.text)
                 if livewire_match:
+                    self.logger.info(f"[LIVEWIRE_FOUND] Found wire:snapshot attribute")
                     try:
                         import html
                         # Decode the HTML entities
                         livewire_data = html.unescape(livewire_match.group(1))
+                        self.logger.debug(f"[LIVEWIRE_CONTENT] First 500 chars: {livewire_data[:500]}")
+
                         # Look for price in the JSON-like structure
                         price_match = re.search(r'"price":(\d+)', livewire_data)
                         currency_match = re.search(r'"price_currency":"([A-Z]+)"', livewire_data)
 
+                        self.logger.info(f"[LIVEWIRE_REGEX] Price match: {bool(price_match)}, Currency match: {bool(currency_match)}")
+
                         if price_match:
                             price = float(price_match.group(1))
                             currency = currency_match.group(1) if currency_match else 'RON'
+                            self.logger.info(f"[LIVEWIRE_VALUES] Extracted price: {price}, currency: {currency}")
 
                             if currency == 'EUR':
                                 item['price_eur'] = price
@@ -262,8 +304,12 @@ class ImobiliareSitemapSpider(SitemapSpider):
                                 item['price_ron'] = price
                             item['currency'] = currency
                             self.logger.info(f"[PRICE_FROM_LIVEWIRE] Found price {price} {currency} from Livewire data")
+                        else:
+                            self.logger.warning(f"[LIVEWIRE_NO_PRICE] No price found in Livewire data")
                     except Exception as e:
-                        self.logger.debug(f"[LIVEWIRE_ERROR] Could not extract price from Livewire data: {e}")
+                        self.logger.error(f"[LIVEWIRE_ERROR] Could not extract price from Livewire data: {e}")
+                else:
+                    self.logger.info(f"[LIVEWIRE_NOT_FOUND] No wire:snapshot found in response")
 
         # Description from meta or content
         if not item.get('description'):
@@ -324,6 +370,10 @@ class ImobiliareSitemapSpider(SitemapSpider):
                     self.logger.warning(f"[PRICE_NO_MATCH] Could not extract number from price text: {price_text}")
             else:
                 self.logger.warning(f"[NO_PRICE] No price found for {response.url}")
+                # Log additional debug info when no price is found
+                self.logger.debug(f"[NO_PRICE_DEBUG] Checked selectors: {price_selectors}")
+                self.logger.debug(f"[NO_PRICE_DEBUG] Page title: {response.css('title::text').get()}")
+                self.logger.debug(f"[NO_PRICE_DEBUG] Has any price text in HTML: {'EUR' in response.text or 'RON' in response.text or 'lei' in response.text}")
 
         # Property type - multiple approaches
         property_type_text = None
@@ -532,6 +582,17 @@ class ImobiliareSitemapSpider(SitemapSpider):
         # Ensure fingerprint fits in varchar(64)
         item['fingerprint'] = f"{self.external_source}_{numeric_id}"[:64]
 
-        self.logger.info(f"[PARSE_PROPERTY] Scraped: {item.get('title', 'No title')} - {item.get('price_ron', item.get('price_eur', 'No price'))} - {item.get('city', 'No city')}")
+        # Final logging before yielding
+        self.logger.info(f"[ITEM_FINAL] Final item for {property_id}:")
+        self.logger.info(f"[ITEM_PRICE] Price RON: {item.get('price_ron')}, Price EUR: {item.get('price_eur')}, Currency: {item.get('currency')}")
+        self.logger.info(f"[ITEM_BASIC] Title: {item.get('title', 'No title')[:100]}")
+        self.logger.info(f"[ITEM_LOCATION] City: {item.get('city')}, Country: {item.get('country')}")
+        self.logger.info(f"[ITEM_PROPERTY] Type: {item.get('property_type')}, Deal: {item.get('deal_type')}")
+        self.logger.info(f"[ITEM_SIZE] Area: {item.get('size')}, Rooms: {item.get('room_count')}, Floor: {item.get('floor')}")
+        self.logger.info(f"[ITEM_STATUS] Status: {item.get('status')}, Fingerprint: {item.get('fingerprint')}")
+
+        # Summary log
+        price_str = f"{item.get('price_ron')} RON" if item.get('price_ron') else (f"{item.get('price_eur')} EUR" if item.get('price_eur') else "No price")
+        self.logger.info(f"[PARSE_PROPERTY] Scraped: Property {property_id} - {price_str} - {item.get('city', 'No city')}")
 
         yield item

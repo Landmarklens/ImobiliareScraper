@@ -112,19 +112,33 @@ class RomaniaDatabasePipeline:
             if existing:
                 # Update existing property
                 spider.logger.info(f"[DB_PIPELINE] Updating existing property: {item['external_id']}")
+                spider.logger.info(f"[DB_UPDATE_PRICES] Current DB prices - RON: {existing.price_ron}, EUR: {existing.price_eur}")
+                spider.logger.info(f"[DB_UPDATE_PRICES] New prices - RON: {item.get('price_ron')}, EUR: {item.get('price_eur')}")
                 self._update_property(existing, item)
             else:
                 # Create new property
                 spider.logger.info(f"[DB_PIPELINE] Creating NEW property: {item['external_id']}")
+                spider.logger.info(f"[DB_NEW_PRICES] Setting prices - RON: {item.get('price_ron')}, EUR: {item.get('price_eur')}")
                 property_obj = self._create_property(item)
                 self.session.add(property_obj)
 
             self.session.commit()
             self.processed_count += 1
+
+            # Verify what was actually saved
+            saved = self.session.query(SpiderResultRomania).filter_by(
+                fingerprint=item['fingerprint']
+            ).first()
+            if saved:
+                spider.logger.info(f"[DB_VERIFIED] Property {item['fingerprint']} in DB with prices - RON: {saved.price_ron}, EUR: {saved.price_eur}")
+
             spider.logger.info(f"[DB_PIPELINE] Successfully saved item {item['external_id']} (Total: {self.processed_count})")
 
         except Exception as e:
             spider.logger.error(f"Database error processing item {item.get('external_id')}: {e}")
+            spider.logger.error(f"[DB_ERROR] Exception type: {type(e).__name__}")
+            spider.logger.error(f"[DB_ERROR] Item prices - RON: {item.get('price_ron')}, EUR: {item.get('price_eur')}")
+            spider.logger.debug(f"[DB_ERROR_FULL] Full item: {item}")
             self.session.rollback()
             self.error_count += 1
             raise DropItem(f"Database error: {e}")
