@@ -33,3 +33,5 @@ playwright-stealth==1.0.6
 undetected-chromedriver==3.5.4
 cloudscraper==1.2.71
 curl-cffi==0.5.10
+scrapy-selenium==0.0.7
+selenium==4.15.2

@@ -112,6 +112,7 @@ SPIDER_MIDDLEWARES = {
 
 # Enable or disable downloader middlewares
 DOWNLOADER_MIDDLEWARES = {
+    'scraper_core.selenium_middleware.UndetectedChromeMiddleware': 300,  # Process before proxy
     'scraper_core.middlewares.CustomUserAgentMiddleware': 400,
     'scraper_core.middlewares.WebshareProxyMiddleware': 350 if PROXY_ENABLED else None,
     'scraper_core.middlewares.RetryMiddleware': 500,
@@ -133,6 +134,11 @@ ITEM_PIPELINES = {
     # No ImagePipeline since we don't store images for Romania
     'scraper_core.pipelines.MetricsPipeline': 900,
 }
+
+# Selenium configuration for Cloudflare bypass
+SELENIUM_HEADLESS = True  # Run Chrome in headless mode
+SELENIUM_PROXY_ENABLED = False  # Proxies don't work well with Selenium/Cloudflare
+CHROME_DRIVER_PATH = None  # Auto-detect
 
 # AutoThrottle configuration
 AUTOTHROTTLE_ENABLED = True
