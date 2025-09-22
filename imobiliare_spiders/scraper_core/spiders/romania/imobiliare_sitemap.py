@@ -54,6 +54,7 @@ class ImobiliareSitemapSpider(SitemapSpider):
         'COOKIES_DEBUG': False,  # Set to True for cookie debugging
         'LOG_LEVEL': 'INFO',  # Changed from DEBUG to reduce logs
         'DOWNLOADER_MIDDLEWARES': {
+            'scraper_core.selenium_middleware.UndetectedChromeMiddleware': 300,  # Selenium FIRST for property pages
             'scrapy.downloadermiddlewares.cookies.CookiesMiddleware': 350,  # Enable cookies
             'scraper_core.middlewares.CustomUserAgentMiddleware': 400,
             'scraper_core.middlewares.WebshareProxyMiddleware': 410,  # Enable residential proxies
