@@ -50,8 +50,11 @@ class ImobiliareSitemapSpider(SitemapSpider):
         'RANDOMIZE_DOWNLOAD_DELAY': True,
         'ROBOTSTXT_OBEY': False,  # Skip robots.txt for now
         'PROXY_ENABLED': True,  # Enable proxy middleware
-        'LOG_LEVEL': 'DEBUG',  # Temporary for debugging
+        'COOKIES_ENABLED': True,  # Enable cookie handling
+        'COOKIES_DEBUG': False,  # Set to True for cookie debugging
+        'LOG_LEVEL': 'INFO',  # Changed from DEBUG to reduce logs
         'DOWNLOADER_MIDDLEWARES': {
+            'scrapy.downloadermiddlewares.cookies.CookiesMiddleware': 350,  # Enable cookies
             'scraper_core.middlewares.CustomUserAgentMiddleware': 400,
             'scraper_core.middlewares.WebshareProxyMiddleware': 410,  # Enable residential proxies
             'scraper_core.middlewares.ExponentialBackoffRetryMiddleware': 500,
@@ -59,8 +62,8 @@ class ImobiliareSitemapSpider(SitemapSpider):
         },
         # Add specific headers to mimic browser
         'DEFAULT_REQUEST_HEADERS': {
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'Accept-Language': 'ro-RO,ro;q=0.9,en-US;q=0.8,en;q=0.7',
             'Accept-Encoding': 'gzip, deflate, br',
             'DNT': '1',
             'Connection': 'keep-alive',
@@ -70,6 +73,9 @@ class ImobiliareSitemapSpider(SitemapSpider):
             'Sec-Fetch-Site': 'none',
             'Sec-Fetch-User': '?1',
             'Cache-Control': 'max-age=0',
+            'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
         }
     }
 
@@ -137,6 +143,15 @@ class ImobiliareSitemapSpider(SitemapSpider):
         # Check for DataDome challenge or minimal content
         if 'datadome' in response.text.lower() or 'cloudflare' in response.text.lower():
             self.logger.error(f"[BLOCKED] Blocked by anti-bot on property page: {response.url}")
+            # Log what we're actually getting
+            self.logger.info(f"[BLOCKED_CONTENT] Response length: {len(response.text)} bytes")
+            self.logger.info(f"[BLOCKED_SAMPLE] First 1000 chars: {response.text[:1000]}")
+            # Save a sample for inspection
+            import os
+            debug_path = '/tmp/blocked_response_sample.html'
+            with open(debug_path, 'w') as f:
+                f.write(response.text)
+            self.logger.info(f"[DEBUG] Saved blocked response to {debug_path}")
             return
 
         # Debug: Check what we're getting
@@ -144,6 +159,14 @@ class ImobiliareSitemapSpider(SitemapSpider):
             self.logger.warning(f"[MINIMAL_CONTENT] Page has very little content ({len(response.text)} bytes): {response.url}")
             self.logger.debug(f"[CONTENT_SAMPLE] First 500 chars: {response.text[:500]}")
             return
+
+        # Log successful response details
+        self.logger.info(f"[SUCCESS_PARSE] Processing {response.url} - Content length: {len(response.text)} bytes")
+
+        # Check for price indicators in the response
+        price_indicators = ['EUR', 'RON', 'lei', '€', 'euro']
+        has_price_text = any(indicator in response.text for indicator in price_indicators)
+        self.logger.info(f"[PRICE_CHECK] Has price indicators: {has_price_text}")
 
         # Debug: Log available selectors to understand page structure
         self.logger.debug(f"[DEBUG] H1 found: {response.css('h1::text').get()}")
@@ -191,6 +214,57 @@ class ImobiliareSitemapSpider(SitemapSpider):
             except:
                 pass
 
+        # Try to extract from dataLayer JavaScript (fallback for when JSON-LD is not available)
+        if not item.get('price') and not item.get('price_ron') and not item.get('price_eur'):
+            # Try dataLayer first
+            datalayer_match = re.search(r'window\.dataLayer\.push\((.*?)\);', response.text, re.DOTALL)
+            if datalayer_match:
+                try:
+                    # Extract the JavaScript object
+                    js_obj = datalayer_match.group(1)
+                    # Look for price and currency in the object
+                    price_match = re.search(r'"listing_price"\s*:\s*"([0-9.]+)"', js_obj)
+                    currency_match = re.search(r'"listing_currency"\s*:\s*"([A-Z]+)"', js_obj)
+
+                    if price_match:
+                        price = float(price_match.group(1))
+                        currency = currency_match.group(1) if currency_match else 'RON'
+
+                        if currency == 'EUR':
+                            item['price_eur'] = price
+                        else:
+                            item['price_ron'] = price
+                        item['currency'] = currency
+                        self.logger.info(f"[PRICE_FROM_DATALAYER] Found price {price} {currency} from dataLayer")
+                except Exception as e:
+                    self.logger.debug(f"[DATALAYER_ERROR] Could not extract price from dataLayer: {e}")
+
+            # Try Livewire data as another fallback
+            if not item.get('price_ron') and not item.get('price_eur'):
+                # Look for Livewire wire:snapshot data
+                livewire_match = re.search(r'wire:snapshot="([^"]+)"', response.text)
+                if livewire_match:
+                    try:
+                        import html
+                        # Decode the HTML entities
+                        livewire_data = html.unescape(livewire_match.group(1))
+                        # Look for price in the JSON-like structure
+                        price_match = re.search(r'"price":(\d+)', livewire_data)
+                        currency_match = re.search(r'"price_currency":"([A-Z]+)"', livewire_data)
+
+                        if price_match:
+                            price = float(price_match.group(1))
+                            currency = currency_match.group(1) if currency_match else 'RON'
+
+                            if currency == 'EUR':
+                                item['price_eur'] = price
+                            else:
+                                item['price_ron'] = price
+                            item['currency'] = currency
+                            self.logger.info(f"[PRICE_FROM_LIVEWIRE] Found price {price} {currency} from Livewire data")
+                    except Exception as e:
+                        self.logger.debug(f"[LIVEWIRE_ERROR] Could not extract price from Livewire data: {e}")
+
         # Description from meta or content
         if not item.get('description'):
             item['description'] = (response.css('meta[property="og:description"]::attr(content)').get() or
@@ -223,10 +297,12 @@ class ImobiliareSitemapSpider(SitemapSpider):
                     break
 
             if price_text:
+                self.logger.info(f"[PRICE_FOUND] Found price text: {price_text}")
                 # Clean price text and extract number
                 price_match = re.search(r'([\d,\.]+)', price_text.replace(' ', ''))
                 if price_match:
                     price = float(price_match.group(1).replace(',', '').replace('.', ''))
+                    self.logger.info(f"[PRICE_EXTRACTED] Extracted price value: {price}")
 
                     # Determine currency
                     currency_meta = response.css('meta[property="og:price:currency"]::attr(content)').get()
@@ -242,6 +318,12 @@ class ImobiliareSitemapSpider(SitemapSpider):
                     else:
                         item['price_ron'] = price
                         item['currency'] = 'RON'
+
+                    self.logger.info(f"[PRICE_SET] Set price - RON: {item.get('price_ron')}, EUR: {item.get('price_eur')}")
+                else:
+                    self.logger.warning(f"[PRICE_NO_MATCH] Could not extract number from price text: {price_text}")
+            else:
+                self.logger.warning(f"[NO_PRICE] No price found for {response.url}")
 
         # Property type - multiple approaches
         property_type_text = None
